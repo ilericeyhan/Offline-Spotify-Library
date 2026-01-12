@@ -1,0 +1,22 @@
+# Credentials and local state
+config.json
+.cache
+history.json
+spotdl_debug.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# Distribution / Build
+build/
+dist/
+*.spec
+
+# OS files
+.DS_Store
+Thumbs.db
