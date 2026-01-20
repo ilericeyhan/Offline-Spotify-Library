@@ -7,7 +7,7 @@ class ConfigManager:
     Manages loading and saving of application configuration.
     """
     DEFAULT_CONFIG = {
-        "cookie_file": "/Users/ceyhan.ileri/OneDrive/Desktop/music.youtube.com_cookies",
+        "cookie_file": "",
         "output_path": os.getcwd(),
         "spotify_client_id": "",
         "spotify_client_secret": "",

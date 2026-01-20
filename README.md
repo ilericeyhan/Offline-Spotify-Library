@@ -29,32 +29,32 @@ Know the state of your library at a glance with **Smart Status Icons**:
 
 ---
 
-## 🛠️ Getting Started
+## 🚀 Getting Started
 
 ### Prerequisites
 1.  **Python 3.9+** installed.
 2.  **FFmpeg** installed and added to your system PATH.
 3.  **Spotify API Keys** (Client ID & Client Secret) from the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/).
 
-### Setup
-1.  **Clone the Repository**:
-    ```bash
-    git clone https://github.com/ilericeyhan/Offline-Spotify-Library.git
-    cd Offline-Spotify-Library
-    ```
-2.  **Install Dependencies**:
-    ```bash
-    pip install -r requirements.txt
-    ```
-3.  **Run the App**:
-    ```bash
-    python main.py
-    ```
-4.  **Configure**:
-    *   Go to the **Settings** tab.
-    *   Set your **Output Path** (where music will be saved).
-    *   Enter your **Spotify Client ID** and **Client Secret**.
-    *   (Optional) Provide a `cookies.txt` file for YouTube Music to avoid age-restrictions.
+### Installation & Launch
+
+#### macOS / Linux (Ubuntu)
+1. Clone the repository and navigate to the folder.
+2. Run the setup script:
+   ```bash
+   chmod +x run.sh
+   ./run.sh
+   ```
+
+#### Windows
+1. Clone the repository and navigate to the folder.
+2. Double-click `run.bat` to launch the application.
+
+### Initial Configuration
+1.  Go to the **Settings** tab.
+2.  Set your **Output Path** (where music will be saved).
+3.  Enter your **Spotify Client ID** and **Client Secret**.
+4.  (Optional) Provide a `cookies.txt` file for YouTube Music to avoid age-restrictions.
 
 ---
 

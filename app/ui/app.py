@@ -2,6 +2,7 @@ import customtkinter as ctk
 import logging
 import json
 import os
+import sys
 import subprocess
 import threading
 import time
@@ -1031,11 +1032,11 @@ class SpotDLApp(ctk.CTk):
             os.makedirs(path, exist_ok=True)
         
         try:
-            if os.name == 'nt': # Windows
+            if sys.platform == 'win32': # Windows
                 os.startfile(path)
-            elif os.uname().sysname == 'Darwin': # macOS
+            elif sys.platform == 'darwin': # macOS
                 subprocess.Popen(['open', path])
-            else: # Linux
+            else: # Linux/Ubuntu
                 subprocess.Popen(['xdg-open', path])
         except Exception as e:
             self.log_message(f"Error opening directory: {e}")
