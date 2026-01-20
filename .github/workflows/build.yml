@@ -15,14 +15,14 @@ jobs:
         os: [windows-latest, macos-latest, ubuntu-latest]
         include:
           - os: windows-latest
-            artifact_name: SpotDL-GUI-Windows.zip
-            asset_name: SpotDL-GUI-Windows.zip
+            artifact_name: Offline-Spotify-Library-Windows.zip
+            asset_name: Offline-Spotify-Library-Windows.zip
           - os: macos-latest
-            artifact_name: SpotDL-GUI-macOS.zip
-            asset_name: SpotDL-GUI-macOS.zip
+            artifact_name: Offline-Spotify-Library-macOS.zip
+            asset_name: Offline-Spotify-Library-macOS.zip
           - os: ubuntu-latest
-            artifact_name: SpotDL-GUI-Linux.zip
-            asset_name: SpotDL-GUI-Linux.zip
+            artifact_name: Offline-Spotify-Library-Linux.zip
+            asset_name: Offline-Spotify-Library-Linux.zip
 
     steps:
       - name: Checkout code
@@ -41,24 +41,24 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller spotdl-gui.spec
+          pyinstaller offline-spotify-library.spec
 
       - name: Zip Artifact (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          compress-archive -Path dist/SpotDL-GUI/* -DestinationPath ${{ matrix.artifact_name }}
+          compress-archive -Path dist/Offline-Spotify-Library/* -DestinationPath ${{ matrix.artifact_name }}
 
       - name: Zip Artifact (macOS)
         if: matrix.os == 'macos-latest'
         run: |
           cd dist
-          zip -r ../${{ matrix.artifact_name }} SpotDL-GUI.app
+          zip -r ../${{ matrix.artifact_name }} Offline-Spotify-Library.app
 
       - name: Zip Artifact (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
           cd dist
-          zip -r ../${{ matrix.artifact_name }} SpotDL-GUI
+          zip -r ../${{ matrix.artifact_name }} Offline-Spotify-Library
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -79,8 +79,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            SpotDL-GUI-Windows.zip
-            SpotDL-GUI-macOS.zip
-            SpotDL-GUI-Linux.zip
+            Offline-Spotify-Library-Windows.zip
+            Offline-Spotify-Library-macOS.zip
+            Offline-Spotify-Library-Linux.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

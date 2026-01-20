@@ -1,4 +1,4 @@
-# Offline Spotify Library (SpotDL GUI)
+# Offline Spotify Library
 
 **A powerful, modern, and offline-first manager for your Spotify Library.**
 

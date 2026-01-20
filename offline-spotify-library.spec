@@ -30,7 +30,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='SpotDL-GUI',
+    name='Offline-Spotify-Library',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -51,12 +51,12 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='SpotDL-GUI',
+    name='Offline-Spotify-Library',
 )
 
 app = BUNDLE(
     coll,
-    name='SpotDL-GUI.app',
+    name='Offline-Spotify-Library.app',
     icon='app/assets/icon.png',
-    bundle_identifier='com.spotdlgui.app',
+    bundle_identifier='com.offlinespotifylibrary.app',
 )
