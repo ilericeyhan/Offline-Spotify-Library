@@ -2480,6 +2480,12 @@ class SpotDLApp(ctk.CTk):
                     lbl = ctk.CTkLabel(card, text=content, font=("Arial", 14, "bold"), 
                                        wraplength=760 - total_indent, justify="left", anchor="w")
                     lbl.pack(fill="x", padx=15, pady=12)
+                elif stripped.startswith("**") and stripped.endswith("**"):
+                    # Special Sub-header styling (Blue & Bold)
+                    lbl = ctk.CTkLabel(container, text=content, font=("Arial", 14, "bold"), 
+                                       text_color="#3498db", wraplength=780 - total_indent, 
+                                       justify="left", anchor="w")
+                    lbl.pack(fill="x", padx=(total_indent + 25, 15), pady=(12, 4))
                 else:
                     lbl = ctk.CTkLabel(container, text=content, font=("Arial", 14), 
                                        wraplength=780 - total_indent, justify="left", anchor="w")

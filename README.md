@@ -38,7 +38,7 @@ Know the state of your library at a glance with **Smart Status Icons**:
 
 ### Installation & Launch
 
-#### macOS / Linux (Ubuntu)
+**macOS / Linux (Ubuntu)**
 1. Clone the repository and navigate to the folder.
 2. Run the setup script:
    ```bash
@@ -46,7 +46,7 @@ Know the state of your library at a glance with **Smart Status Icons**:
    ./run.sh
    ```
 
-#### Windows
+**Windows**
 1. Clone the repository and navigate to the folder.
 2. Double-click `run.bat` to launch the application.
 
