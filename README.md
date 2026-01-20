@@ -1,84 +1,78 @@
-========================================================================
-             SPOTDL GUI - OFFLINE SPOTIFY LIBRARY MANAGER
-========================================================================
-Version: 1.3.0
-========================================================================
+# Offline Spotify Library (SpotDL GUI)
 
-1. INTRODUCTION
----------------
-SpotDL GUI is a powerful tool designed to help you manage and download
-your Spotify playlists for offline use. It uses 'spotdl' in the background
-to fetch high-quality audio while providing a clean, organized interface
-for your music library.
+**A powerful, modern, and offline-first manager for your Spotify Library.**
 
-2. GETTING STARTED
-------------------
-A. PREREQUISITES:
-   - Python 3.9+ installed.
-   - FFmpeg installed and added to your system PATH.
-   - Spotify API Keys (Client ID & Client Secret).
+This application provides a rich Graphical User Interface (GUI) for `spotdl`, allowing you to synchronize, manage, and organize your Spotify playlists for offline playback. It goes beyond simple downloading by offering a persistent library, drag-and-drop organization, and robust status tracking.
 
-B. SETUP:
-   1. Go to the 'Settings' tab and set your 'Output Path' (where music is saved).
-   2. Go to 'My Profile' tab and click 'Login with Spotify'. 
-      You will be prompted to enter your credentials in the Settings tab.
-   3. Once logged in, you can fetch your playlists and add them to your Sync Library.
+## 🚀 Key Features
 
-C. WHY DO I NEED API KEYS (CLIENT ID/SECRET)?
-   - PRIVACY: By using your own keys, this app talks DIRECTLY to Spotify. 
-     Your data never passes through a third-party server.
-   - SECURITY: Your login happens via official Spotify OAuth in your browser. 
-     The app only stores a temporary "permission token" locally on your machine.
-   - CONTROL: You are in full control of your "app" via the Spotify Dashboard.
+### 📚 Smart Library Management
+*   **Persistent Library**: Track your favorite playlists and keep them synced forever.
+*   **Visual Organization**: Create folders, group playlists by genre, and reorder them with simple **Drag & Drop**.
+*   **Interactive UI**: A sleek, dark-themed interface with hover effects and responsive design.
 
-3. UNDERSTANDING THE TABS
--------------------------
-- LIBRARY: The heart of the app. Track your synchronized playlists here.
-- DOWNLOADER: Quick download for any single Spotify URL (Playlist, Album, Song).
-- MY PROFILE: Manage your Spotify account, browse playlists, and add them to sync.
-- HISTORY: View all your past download sessions and recently added tracks.
-- SETTINGS: Configure paths, API keys, cookie files, and UI preferences.
-- LOGS: Technical debug logs and a live "New Downloads" feed.
-- ABOUT/FAQ: This guide and common troubleshooting steps.
+### 🔄 Intelligent Sync Status
+Know the state of your library at a glance with **Smart Status Icons**:
+*   🟢 **Synced**: Up-to-date with Spotify.
+*   🔄 **New Songs**: New tracks have been detected on Spotify.
+*   ⚠️ **Interrupted**: The last sync attempt hit a snag (e.g., rate limit).
+*   ⚪ **New**: Ready to be synced for the first time.
 
-4. KEY FEATURES
----------------
-A. PLAYLIST GROUPING (TREE VIEW):
-   You can create "Groups" in the Library tab to organize playlists (e.g., By Genre).
-   Use the "➔📁" button on any playlist to move it into a group.
-   Toggle groups with the "▶/▼" icons to keep your view tidy.
+### 🛡️ Robust Rate Limit Protection
+*   **Safety Guards**: The app intelligently detects Spotify's "429 Too Many Requests" errors.
+*   **Extreme Limit Protection**: Automatically aborts syncs if Spotify demands a >10 minute coold-down (e.g., the rare 22-hour block), preventing the app from freezing.
+*   **Exponential Backoff**: Uses smart retry logic for minor transient errors.
 
-B. SMART REORDERING:
-   Grab the "⠿" handle on any playlist to move it up or down. Your custom 
-   order is saved automatically.
+### 📊 Comprehensive History
+*   **Sync Logs**: Every download session is recorded.
+*   **Failure Tracking**: Even if a sync fails completely, it's logged as "Interrupted" so you never miss a beat.
 
-C. SYNC LOGIC:
-   Click "Sync All" in the Library to automatically download any new songs
-   added to your tracked playlists. The app remembers what you have and 
-   only downloads what's missing.
+---
 
-D. EXTRA TRACKS DETECTION:
-   If you delete a song from Spotify but it stays on your disk, the app 
-   will show "(+X extras)". Click it to see and manage those files.
+## 🛠️ Getting Started
 
-5. FAQ / TROUBLESHOOTING
-------------------------
-Q: Why aren't my playlist names refreshing?
-A: Go to Settings and ensure your Spotify API keys are correct. Then use 
-   the "Refresh Status" button in the Library tab.
+### Prerequisites
+1.  **Python 3.9+** installed.
+2.  **FFmpeg** installed and added to your system PATH.
+3.  **Spotify API Keys** (Client ID & Client Secret) from the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/).
 
-Q: Where is my music?
-A: Music is saved in your 'Output Path' (set in Settings), typically 
-   categorized into subfolders with the playlist name.
+### Setup
+1.  **Clone the Repository**:
+    ```bash
+    git clone https://github.com/ilericeyhan/Offline-Spotify-Library.git
+    cd Offline-Spotify-Library
+    ```
+2.  **Install Dependencies**:
+    ```bash
+    pip install -r requirements.txt
+    ```
+3.  **Run the App**:
+    ```bash
+    python main.py
+    ```
+4.  **Configure**:
+    *   Go to the **Settings** tab.
+    *   Set your **Output Path** (where music will be saved).
+    *   Enter your **Spotify Client ID** and **Client Secret**.
+    *   (Optional) Provide a `cookies.txt` file for YouTube Music to avoid age-restrictions.
 
-Q: The sync is failing/stuck. What do I do?
-A: Check the 'Logs' tab for specific errors. Often, updating 'spotdl' 
-   (pip install -U spotdl) or providing a 'Cookie File' in Settings fixes 
-   most connection issues.
+---
 
-Q: How do I move a playlist out of a group?
-A: Click the "➔📁" button and select "Root" from the dropdown menu.
+## ❓ FAQ & Troubleshooting
 
-========================================================================
-Developed with love for music lovers. 🚀🎶
-========================================================================
+**Q: My sync is stuck or failing?**
+> Check the **Logs** tab. If you see "429" errors, Spotify is rate-limiting you. The app will handle this gracefully, but you may need to wait.
+
+**Q: Why don't I see new songs?**
+> Click **Refresh Status** in the Library tab. If the icon turns Orange (🔄), hit **Sync All**.
+
+**Q: Where is the music saved?**
+> In the folder you selected in the **Settings** tab. Each playlist gets its own subfolder.
+
+---
+
+## 👨‍💻 Attribution
+
+Developed with ❤️ for music lovers.
+
+**Powered by vibe coding - Antigravity**

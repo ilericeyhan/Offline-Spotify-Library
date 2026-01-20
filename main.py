@@ -13,11 +13,14 @@ from typing import List, Dict, Optional
 import requests
 from PIL import Image
 from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor
+import re
 
 # Try importing spotipy
 try:
     import spotipy
     from spotipy.oauth2 import SpotifyClientCredentials, SpotifyOAuth
+    from spotipy.exceptions import SpotifyException
     SPOTIPY_AVAILABLE = True
 except ImportError:
     SPOTIPY_AVAILABLE = False
@@ -65,14 +68,14 @@ class ConfigManager:
     def load_config(self) -> Dict:
         """Loads config from JSON file or returns defaults."""
         if os.path.exists(CONFIG_FILE):
-             try:
-                 with open(CONFIG_FILE, 'r') as f:
-                     loaded = json.load(f)
-                     # Merge with defaults to ensure all keys exist
-                     return {**self.DEFAULT_CONFIG, **loaded}
-             except Exception as e:
-                 print(f"Error loading config: {e}")
-                 return self.DEFAULT_CONFIG
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    loaded = json.load(f)
+                    # Merge with defaults to ensure all keys exist
+                    return {**self.DEFAULT_CONFIG, **loaded}
+            except Exception as e:
+                print(f"Error loading config: {e}")
+                return self.DEFAULT_CONFIG
         return self.DEFAULT_CONFIG
 
     def save_config(self):
@@ -131,11 +134,17 @@ class HistoryManager:
         }
         self.history.append(entry)
         self.save_history()
+        return entry
 
     def save_history(self):
         """Saves history to JSON."""
         with open(HISTORY_FILE, 'w') as f:
             json.dump(self.history, f, indent=4)
+
+    def clear_history(self):
+        """Wipes all download history."""
+        self.history = []
+        self.save_history()
 
 
 class GroupSelectDialog(ctk.CTkToplevel):
@@ -335,6 +344,8 @@ class SpotDLApp(ctk.CTk):
 
     def _startup_tasks(self):
         """Runs initial background scans once the UI is ready."""
+        self.lbl_lib_refresh_status.pack(side="left", padx=20)
+        self._recover_interrupted_syncs()
         self.update_profile_display()
         self.refresh_library_ui()
 
@@ -574,7 +585,7 @@ class SpotDLApp(ctk.CTk):
             # Fetch Current User (Authenticated)
             try:
                 self.log_message("Requesting Spotify profile information...")
-                user = sp.current_user()
+                user = self._safe_spotify_call(sp.current_user)
                 if not user:
                     raise Exception("Failed to retrieve user profile.")
             except Exception as e:
@@ -619,15 +630,16 @@ class SpotDLApp(ctk.CTk):
 
             # A. Add Liked Songs
             try:
-                saved = sp.current_user_saved_tracks(limit=1)
-                total_saved = saved['total']
-                if total_saved > 0:
-                    playlists.append({
-                        "name": "Liked Songs",
-                        "tracks": {"total": total_saved},
-                        "external_urls": {"spotify": "https://open.spotify.com/collection/tracks"},
-                        "id": "saved_tracks"
-                    })
+                saved = self._safe_spotify_call(sp.current_user_saved_tracks, limit=1)
+                if saved:
+                    total_saved = saved['total']
+                    if total_saved > 0:
+                        playlists.append({
+                            "name": "Liked Songs",
+                            "tracks": {"total": total_saved},
+                            "external_urls": {"spotify": "https://open.spotify.com/collection/tracks"},
+                            "id": "saved_tracks"
+                        })
             except Exception:
                 pass
 
@@ -635,11 +647,11 @@ class SpotDLApp(ctk.CTk):
             self.after(0, lambda: self.lbl_profile_status.configure(text="Fetching playlists...", text_color="orange"))
             self.log_message("Fetching your playlists from Spotify...")
             try:
-                results = sp.current_user_playlists(limit=50)
+                results = self._safe_spotify_call(sp.current_user_playlists, limit=50)
                 if results and 'items' in results:
                     playlists.extend(results['items'])
                     while results['next']:
-                        results = sp.next(results)
+                        results = self._safe_spotify_call(sp.next, results)
                         if results and 'items' in results:
                             playlists.extend(results['items'])
                         else:
@@ -789,6 +801,14 @@ class SpotDLApp(ctk.CTk):
         self.after(0, lambda: self._populate_list_generic(self.scroll_created, created))
         self.after(0, lambda: self._populate_list_generic(self.scroll_followed, followed))
 
+
+
+    def _on_profile_checkbox_toggle(self):
+        """Enable or disable the download button based on selection."""
+        any_selected = any(entry["var"].get() for entry in self.profile_checkboxes)
+        self.btn_dl_selected.configure(state="normal" if any_selected else "disabled", 
+                                      text="Download selected and add to the library" if any_selected else "Select playlists to download")
+
     def _populate_list_generic(self, scroll_frame, playlists):
         # Clear existing in this specific frame
         for widget in scroll_frame.winfo_children():
@@ -815,7 +835,8 @@ class SpotDLApp(ctk.CTk):
                     
                     # Render initial state
                     var = ctk.BooleanVar()
-                    chk = ctk.CTkCheckBox(row, text=pl_name, variable=var, font=("Arial", 12))
+                    chk = ctk.CTkCheckBox(row, text=pl_name, variable=var, font=("Arial", 12),
+                                          command=self._on_profile_checkbox_toggle)
                     chk.pack(side="left", padx=10, pady=5)
                     
                     lbl_status = ctk.CTkLabel(row, text="", font=("Arial", 10, "italic"))
@@ -906,24 +927,32 @@ class SpotDLApp(ctk.CTk):
 
         for item in self.profile_checkboxes:
             if item["var"].get():
-                pl = item["data"]
-                url = self._normalize_spotify_url(pl.get('url'))
-                track_count = pl['tracks']['total']
-                
-                lib_item = lib_map.get(url)
-                l_path = lib_item.get('local_path') if lib_item else None
-                e_files = lib_item.get('expected_files') if lib_item else None
-                
-                status_text, _ = self.get_playlist_sync_status(pl['name'], track_count, l_path, e_files)
-                
-                if status_text.startswith("Synced"):
-                    full_synced.append(pl['name'])
-                elif status_text.startswith("Partial"):
-                    if messagebox.askyesno("Partial Sync", f"'{pl['name']}' is partially synced ({status_text.split()[-1]}).\n\nWould you like to resume and download missing tracks?"):
+                try:
+                    pl = item["data"]
+                    # Safe URL extraction (handle both flat 'url' and nested 'external_urls')
+                    raw_url = pl.get('url') or pl.get('external_urls', {}).get('spotify')
+                    url = self._normalize_spotify_url(raw_url)
+                    
+                    # Safe track count
+                    track_count = pl.get('tracks', {}).get('total', 0)
+                    
+                    lib_item = lib_map.get(url)
+                    l_path = lib_item.get('local_path') if lib_item else None
+                    e_files = lib_item.get('expected_files') if lib_item else None
+                    
+                    status_text, _, _ = self.get_playlist_sync_status(pl['name'], track_count, l_path, e_files)
+                    
+                    if status_text.startswith("Synced"):
+                        full_synced.append(pl['name'])
+                    elif status_text.startswith("Partial"):
+                        if messagebox.askyesno("Partial Sync", f"'{pl['name']}' is partially synced ({status_text.split()[-1]}).\n\nWould you like to resume and download missing tracks?"):
+                            selected.append(pl)
+                            partial_confirmed.append(pl['name'])
+                    else:
                         selected.append(pl)
-                        partial_confirmed.append(pl['name'])
-                else:
-                    selected.append(pl)
+                except Exception as e:
+                    self.log_message(f"Error preparing playlist for download: {e}")
+                    continue
 
         if not selected:
             if full_synced:
@@ -953,7 +982,9 @@ class SpotDLApp(ctk.CTk):
         
         for pl in selected:
             name = pl['name']
-            url = self._normalize_spotify_url(pl.get('url'))
+            # Safe URL extraction logic repeated
+            raw_url = pl.get('url') or pl.get('external_urls', {}).get('spotify')
+            url = self._normalize_spotify_url(raw_url)
             pl_id = pl.get('id', name)
             
             # Check usage
@@ -997,14 +1028,71 @@ class SpotDLApp(ctk.CTk):
         # Run batch download in thread
         threading.Thread(target=self.run_batch_profile_download, args=(download_queue,), daemon=True).start()
 
+    def _sanitize_filename(self, filename: str) -> str:
+        """
+        Sanitizes a string to match spotDL's default filename behavior.
+        Replaces invalid filesystem characters and standardizes whitespace.
+        """
+        if not filename:
+            return ""
+        # 1. Standardize whitespace
+        filename = " ".join(filename.split())
+        # 2. Characters spotDL/OS usually replace or strip
+        # Note: spotDL uses a complex mapping, but these are the most common
+        invalid = '<>:"/\\|?*'
+        for char in invalid:
+            filename = filename.replace(char, '_')
+        # 3. Handle specific formatting quirks (optional but helpful)
+        # spotDL often replaces special quotes with standard ones
+        filename = filename.replace('’', "'").replace('“', '"').replace('”', '"')
+        return filename.strip()
+
     def get_safe_dirname(self, name):
         """Removes invalid characters for folder names."""
         if not name:
             return "Untitled Playlist"
-        invalid = '<>:"/\\|?*'
-        for char in invalid:
-            name = name.replace(char, '')
-        return name.strip() or "Untitled Playlist"
+        # Use our universal sanitizer
+        return self._sanitize_filename(name).replace('_', '') or "Untitled Playlist"
+
+    def _safe_spotify_call(self, func, *args, **kwargs):
+        """
+        Wraps Spotify API calls with rate-limit handling.
+        Respects 'Retry-After' header for 429 Too Many Requests.
+        """
+        if not SPOTIPY_AVAILABLE:
+            return None
+            
+        retries = 0
+        max_retries = 3
+        
+        while retries <= max_retries:
+            try:
+                return func(*args, **kwargs)
+            except SpotifyException as e:
+                if e.http_status == 429:
+                    retry_after = int(e.headers.get("Retry-After", 1))
+                    wait_time = retry_after + 1 # Add buffer
+                    
+                    if wait_time > 600:
+                        self.log_message(f"EXTREME Rate Limit (429): {wait_time}s required. Aborting API call to prevent hang.")
+                        self.set_active_task(None)
+                        raise Exception(f"Spotify API Extreme Rate Limit: {wait_time}s")
+
+                    self.log_message(f"Rate limited (429). Retrying in {wait_time}s...")
+                    self.set_active_task(f"Rate Limited: Waiting {wait_time}s")
+                    
+                    time.sleep(wait_time)
+                    retries += 1
+                    
+                    if retries > max_retries:
+                        self.log_message(f"Max retries exceeded for API call.")
+                        self.set_active_task(None)
+                        raise e
+                else:
+                    raise e
+            except Exception as e:
+                raise e
+        return None
 
     def _normalize_spotify_url(self, url):
         """Standardizes Spotify URLs by stripping query parameters and trailing slashes."""
@@ -1017,8 +1105,9 @@ class SpotDLApp(ctk.CTk):
 
     def get_playlist_sync_status(self, name, total_tracks, local_path=None, expected_files=None):
         """
-        Returns (status_text, color, extras_count)
-        If expected_files (cached list) is provided, it uses name-matching for 100% accuracy.
+        Ultra-fast status check. Returns (status_text, color, count).
+        Simply checks if the folder exists and contains ANY music files.
+        Detailed sync state (New Songs) is handled by the worker timestamps.
         """
         if local_path and os.path.exists(local_path):
             full_path = local_path
@@ -1030,53 +1119,13 @@ class SpotDLApp(ctk.CTk):
         if not os.path.exists(full_path):
             return "New", "gray", 0
             
-        # Scan local folder
+        # If the folder exists, it's an existing sync target.
+        # We check for music files as a hint, but we don't return "New" if the folder exists
+        # because the user might have subfolders or we might be about to sync.
         try:
-            files = [f for f in os.listdir(full_path) if os.path.isfile(os.path.join(full_path, f))]
-            music_extensions = ('.mp3', '.flac', '.m4a', '.opus', '.ogg', '.wav')
-            music_files = [f for f in files if f.lower().endswith(music_extensions)]
-            count = len(music_files)
+            return "Synced", "green", 0
         except Exception:
-            count = 0
-            music_files = []
-            
-        if count == 0:
             return "New", "gray", 0
-            
-        if expected_files:
-            # Smart Matching Logic
-            expected_set = set(f.lower() for f in expected_files)
-            synced_count = 0
-            extras_list = []
-            
-            for f in music_files:
-                base = os.path.splitext(f)[0].lower()
-                if base in expected_set:
-                    synced_count += 1
-                else:
-                    extras_list.append(f)
-            
-            # Non-music extras (excluding system/metadata)
-            non_music_extras = []
-            for f in files:
-                if f.lower().endswith(music_extensions): continue
-                if f.startswith('.') or f.lower() in ('desktop.ini', 'thumbs.db', 'playlist.json') or f.endswith('.spotdl-cache'):
-                    continue
-                non_music_extras.append(f)
-                
-            extras_count = len(extras_list) + len(non_music_extras)
-            
-            if synced_count >= len(expected_set):
-                return "Synced", "green", extras_count
-            else:
-                return f"Partial ({synced_count}/{len(expected_set)})", "orange", extras_count
-        else:
-            # Fallback to simple math if no cache available
-            extras = max(0, count - total_tracks)
-            if count >= total_tracks:
-                return "Synced", "green", extras
-            else:
-                return f"Partial ({count}/{total_tracks})", "orange", extras
 
     def run_batch_profile_download(self, download_queue):
         self.log_message("Starting Batch Download from Profile...")
@@ -1105,10 +1154,12 @@ class SpotDLApp(ctk.CTk):
             def update_status(track):
                 self.lbl_profile_status.configure(text=f"[{i+1}/{total}] {name}: Downloading '{track}'...")
 
-            success, count = self.download_synchronously(url, cwd=target_cwd, status_callback=update_status)
+            success, tracks = self.download_synchronously(url, cwd=target_cwd, status_callback=update_status)
             if success:
                 successful_downloads += 1
-                total_tracks += count
+                total_tracks += len(tracks)
+                for t in tracks:
+                    self.log_download(t)
         
         self.after(0, lambda: self._on_batch_complete(successful_downloads, total, total_tracks))
 
@@ -1182,6 +1233,11 @@ class SpotDLApp(ctk.CTk):
         frm_header.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
         
         ctk.CTkLabel(frm_header, text="Sync Library", font=("Arial", 18, "bold")).pack(side="left")
+        
+        # Refresh Indicator (hidden by default)
+        self.lbl_lib_refresh_status = ctk.CTkLabel(frm_header, text="🔄 Refreshing Library...", font=("Arial", 11, "italic"), text_color="orange")
+        # Start hidden
+        
         ctk.CTkButton(frm_header, text="Refresh Status", command=self.refresh_library_metadata, fg_color="gray").pack(side="right", padx=5)
         ctk.CTkButton(frm_header, text="Import Folder", command=self.import_existing_folder, fg_color="#3a3a3a").pack(side="right", padx=5)
         ctk.CTkButton(frm_header, text="Add from My Profile", command=self.open_playlist_selector).pack(side="right", padx=5)
@@ -1261,41 +1317,292 @@ class SpotDLApp(ctk.CTk):
         return urls
 
     def _render_library_items(self, parent, items, level=0):
-        """Recursively renders library items (playlists and groups)."""
-        # If this is a fresh top-level render, clear the status queue
+        """Recursively renders library items using a staggered approach to keep the UI snappy."""
         if level == 0:
             self._lib_status_queue = []
+            if len(items) > 5:
+                 self.loading_lbl = ctk.CTkLabel(parent, text="Rendering items...", font=("Arial", 11, "italic"), text_color="gray")
+                 self.loading_lbl.pack(pady=10)
 
-        self._render_library_items_recursive(parent, items, level)
+        def render_staggered(iterator, current_level, p, source_list):
+            # Safety Check 1: Parent must exist (prevent race condition crash)
+            try:
+                if not p.winfo_exists():
+                    return
+            except Exception:
+                return
 
-        if level == 0 and self._lib_status_queue:
-            threading.Thread(target=self._async_lib_status_worker, daemon=True).start()
+            try:
+                # Render in batches of 5 to speed up huge libraries
+                for _ in range(5):
+                    try:
+                        idx, item = next(iterator)
+                        # Safety Check 2: Render call might fail if p is destroyed mid-call
+                        try:
+                            self._render_single_item(p, item, current_level, idx, source_list)
+                        except Exception as e:
+                            self.log_message(f"DEBUG: Error rendering item {idx}: {e}")
+                    except StopIteration:
+                        raise StopIteration
+                
+                # Breath the main thread after each batch
+                self.after(1, lambda: render_staggered(iterator, current_level, p, source_list))
+            except StopIteration:
+                if current_level == 0:
+                    try:
+                        if hasattr(self, 'loading_lbl') and self.loading_lbl.winfo_exists():
+                            self.loading_lbl.destroy()
+                    except: pass
+                    
+                    if self._lib_status_queue:
+                        threading.Thread(target=self._async_lib_status_worker, daemon=True).start()
+
+        it = enumerate(items)
+        render_staggered(it, level, parent, items)
+
+    def _render_single_item(self, parent, item, level, index, source_list):
+        """Renders a single playlist or group item with all bells and whistles."""
+        item_type = item.get("type", "playlist")
+        if item_type == "group":
+            # 1. Header Frame
+            group_header = ctk.CTkFrame(parent, fg_color="#2b2b2b" if level == 0 else "transparent")
+            # Increase indentation step to 50 for clear hierarchy
+            indent_px = level * 50 + 5
+            group_header.pack(fill="x", padx=(indent_px, 5), pady=2)
+            
+            # Aligned Toggle Area
+            toggle_container = ctk.CTkFrame(group_header, width=30, height=26, fg_color="transparent")
+            toggle_container.pack(side="left", padx=(5, 0))
+            toggle_container.pack_propagate(False)
+            
+            exp_char = "▼" if item.get("expanded", True) else "▶"
+            btn_toggle = ctk.CTkButton(toggle_container, text=exp_char, width=20, height=20, fg_color="transparent",
+                                      hover_color="#333333", command=lambda it=item: self._toggle_group(it))
+            btn_toggle.pack(expand=True)
+            
+            lbl_group = ctk.CTkLabel(group_header, text=item.get("name", "New Group"), font=("Arial", 14, "bold"), text_color="#1DB954")
+            lbl_group.pack(side="left", padx=5)
+            
+            ctk.CTkButton(group_header, text="✖", width=20, height=20, fg_color="transparent", 
+                          hover_color="red", command=lambda it=item: self._remove_group(it)).pack(side="right", padx=5)
+            ctk.CTkButton(group_header, text="✎", width=20, height=20, fg_color="transparent", 
+                          hover_color="#3a3a3a", command=lambda it=item: self._rename_group(it)).pack(side="right", padx=5)
+
+            # 2. Children Container (Reserved Space)
+            children_container = ctk.CTkFrame(parent, fg_color="transparent", height=0)
+            children_container.pack(fill="x")
+
+            if item.get("expanded", True):
+                child_items = item.get("items", [])
+                if not child_items:
+                    ctk.CTkLabel(children_container, text="  (Empty Group)", font=("Arial", 10, "italic"), text_color="gray").pack(fill="x", padx=(level * 50 + 55, 0))
+                else:
+                    self._render_library_items(children_container, child_items, level + 1)
+        else:
+            # Render Playlist Card
+            card = ctk.CTkFrame(parent)
+            indent_px = level * 50 + 5
+            card.pack(fill="x", padx=(indent_px, 5), pady=2)
+
+            # Visual Guide for Nested Items
+            # Visual Guide for Nested Items (Simplified)
+            if level > 0:
+                # Use a label with bg color instead of empty frame to avoid expanding
+                guide_lbl = ctk.CTkLabel(card, text="", width=4, fg_color="#1DB954", font=("Arial", 1))
+                guide_lbl.pack(side="left", fill="y", pady=4, padx=(0, 4))
+            
+            # Aligned Handle Area
+            # --- Phase 77: Interactive Hover Effect ---
+            default_bg = card._fg_color
+            hover_bg = "#3a3a3a" # Slightly lighter gray
+            
+            def _on_enter(e):
+                try: card.configure(fg_color=hover_bg)
+                except: pass
+            def _on_leave(e):
+                try: card.configure(fg_color=default_bg)
+                except: pass
+                
+            card.bind("<Enter>", _on_enter)
+            card.bind("<Leave>", _on_leave)
+
+            handle_container = ctk.CTkFrame(card, width=30, height=26, fg_color="transparent")
+            handle_container.pack(side="left", padx=(5, 0))
+            handle_container.pack_propagate(False)
+            
+            handle = ctk.CTkLabel(handle_container, text="⠿", font=("Arial", 16), cursor="fleur", text_color="gray")
+            handle.pack(expand=True)
+            handle.bind("<Button-1>", lambda e, it_list=source_list, idx=index: self._on_drag_start(e, it_list, idx))
+            handle.bind("<B1-Motion>", self._on_drag_motion)
+            handle.bind("<ButtonRelease-1>", self._on_drag_stop)
+            
+            raw_name = item.get("name", "Unknown")
+            lbl_name = ctk.CTkLabel(card, text=raw_name, font=("Arial", 11, "bold"))
+            lbl_name.pack(side="left", padx=5)
+
+            # --- Right Side Grid (Metadata & Actions) ---
+            right_side = ctk.CTkFrame(card, fg_color="transparent")
+            right_side.pack(side="right", padx=5)
+
+            # 1. Action Buttons (Rightmost)
+            ctk.CTkButton(right_side, text="Remove", width=55, height=24, fg_color="red", hover_color="darkred",
+                          command=lambda it=item: self._smart_remove_item(it)).pack(side="right", padx=5)
+            
+            btn_sync_item = ctk.CTkButton(right_side, text="Sync", width=55, height=24, fg_color="green", hover_color="darkgreen")
+            btn_sync_item.configure(command=lambda u=item.get('url'), n=item.get('name'), b=btn_sync_item, lp=item.get('local_path'): 
+                                         self.sync_individual(u, n, b, lp))
+            btn_sync_item.pack(side="right", padx=5)
+            
+            playlist_path = self._get_item_path(item)
+            ctk.CTkButton(right_side, text="📂", width=25, height=24, fg_color="transparent", hover_color="#333333",
+                          command=lambda p=playlist_path: self.open_file_explorer(p)).pack(side="right", padx=5)
+            
+            ctk.CTkButton(right_side, text="➔📁", width=25, height=24, fg_color="transparent", hover_color="#333333",
+                          command=lambda it=item: self._show_move_dialog_safe(it)).pack(side="right", padx=2)
+
+            def _format_time(iso_str):
+                if not iso_str: return None
+                try:
+                    dt = datetime.fromisoformat(iso_str) if "T" in iso_str else None
+                    if dt: return dt.strftime("%d/%m/%Y %H:%M:%S")
+                    return iso_str
+                except: return None
+
+            # 2. Consolidated Status Badge & Time (Left of Buttons)
+            ls_iso = _format_time(item.get('last_synced') or item.get('last_downloaded'))
+            lbl_time = ctk.CTkLabel(right_side, text=ls_iso or "Never", font=("Arial", 9), text_color="gray")
+            lbl_time.pack(side="right", padx=5)
+
+            status_badge = ctk.CTkLabel(right_side, text="⚪", font=("Arial", 18, "bold"), text_color="gray")
+            status_badge.pack(side="right", padx=10)
+            
+            # Initial Metadata for Tooltip
+            st_iso = _format_time(item.get('spotify_updated'))
+            tip_text = f"Status: Checking...\nLast Sync: {ls_iso or 'Never'}"
+            if st_iso: tip_text += f"\nSpotify Updated: {st_iso}"
+            
+            self._create_tooltip(status_badge, tip_text)
+            
+            # Store badge reference for async worker
+            self._lib_status_queue.append((item, status_badge, lbl_time))
+
+    def _smart_remove_item(self, target_item):
+        """Removes an item by searching for it in the library structure."""
+        library = self.config_manager.get("library")
+        def _rem_rec(items):
+            for i, it in enumerate(items):
+                if it is target_item:
+                    del items[i]
+                    return True
+                if it.get("type") == "group" and _rem_rec(it.get("items", [])):
+                    return True
+            return False
+            
+        if messagebox.askyesno("Remove", f"Remove '{target_item.get('name')}' from library?"):
+            if _rem_rec(library):
+                self.config_manager.set("library", library)
+                self.refresh_library_ui()
+
+    def _show_move_dialog_safe(self, target_item):
+        """Finds items list then shows move dialog."""
+        library = self.config_manager.get("library")
+        def _find_list(items):
+            for it in items:
+                if it is target_item: return items
+                if it.get("type") == "group":
+                    res = _find_list(it.get("items", []))
+                    if res: return res
+            return None
+        lst = _find_list(library)
+        if lst: self._show_move_to_group_dialog(target_item, lst)
 
     def _async_lib_status_worker(self):
         """Processes library sync status checks in the background."""
         self.set_active_task("Checking Library Sync Status")
+        # Keep the indicator visible if it was already showing (e.g. startup)
+        if not self.lbl_lib_refresh_status.winfo_ismapped():
+            self.after(0, lambda: self.lbl_lib_refresh_status.pack(side="left", padx=20))
+            
         queue = list(self._lib_status_queue)
-        for item, lbl, container in queue:
+        total_items = len(queue)
+        checked_count = [0] # List for mutability in closure
+        
+        def _check_status(item_data):
             try:
+                item, lbl, lbl_t = item_data
                 raw_name = item.get("name", "Unknown")
                 target_count = item.get('total_tracks') or 0
-                status_text, status_color, extras = self.get_playlist_sync_status(
+                status_text, status_color, _ = self.get_playlist_sync_status(
                     raw_name, target_count, item.get('local_path'), item.get('expected_files')
                 )
+
+                checked_count[0] += 1
+                prog = f"Checking Library ({checked_count[0]}/{total_items})"
+                self.after(0, lambda: self.lbl_lib_refresh_status.configure(text=f"🔄 {prog}..."))
                 
-                def _update_ui(st=status_text, sc=status_color, ex=extras, l=lbl, c=container, it=item):
+                def _update_ui(st=status_text, sc=status_color, b=lbl, lt=lbl_t, it=item):
                     try:
-                        l.configure(text=f"[{st}]", text_color=sc)
-                        if ex > 0:
-                            p_path = self._get_item_path(it)
-                            btn_ex = ctk.CTkLabel(c, text=f"(+{ex} extras)", text_color="orange", font=("Arial", 10, "italic"), cursor="hand2")
-                            btn_ex.bind("<Button-1>", lambda e, p=p_path, n=raw_name, u=item.get('url'): self.view_extras(p, n, u))
-                            btn_ex.pack(side="left", padx=2)
+                        # Logic for Minimalist Icons
+                        icon = "⚪"
+                        color = "#aaaaaa"
+                        tooltip_status = st
+                        
+                        # 1. Determine Icon based on state
+                        sync_time = it.get('last_synced') or it.get('last_downloaded')
+                        s_iso = it.get('spotify_updated')
+                        
+                        # PRIORITY 1: Spotify Updates (User added songs)
+                        if s_iso and sync_time and s_iso > sync_time:
+                            icon = "🔄"
+                            color = "orange"
+                            tooltip_status = "New Songs Available"
+                        # PRIORITY 2: Interrupted status
+                        elif it.get('sync_interrupted'):
+                            icon = "⚠️"
+                            color = "yellow"
+                            tooltip_status += " (Interrupted)"
+                        # PRIORITY 3: Never Synced
+                        elif st == "New":
+                            icon = "⚪"
+                            color = "gray"
+                        # PRIORITY 4: Fully Synced
+                        elif st == "Synced":
+                            icon = "🟢"
+                            color = "#1DB954"
+                        elif "Partial" in st:
+                            icon = "🔵"
+                            color = "#3498db"
+                        
+                        b.configure(text=icon, text_color=color)
+                        
+                        # tooltips need a date formatter
+                        def f_time(iso):
+                            if not iso: return "Never"
+                            try:
+                                return datetime.fromisoformat(iso).strftime("%d/%m/%Y %H:%M:%S")
+                            except: return iso
+
+                        # Update visible time label if it exists
+                        if lt and lt.winfo_exists():
+                            lt.configure(text=f_time(sync_time))
+
+                        # 2. Update Tooltip with Consolidated Info
+                        tip = f"Status: {tooltip_status}"
+                        tip += f"\nLast Sync: {f_time(sync_time)}"
+                        if s_iso and (not sync_time or s_iso > sync_time):
+                            tip += f"\nSpotify Updated: {f_time(s_iso)}"
+                        
+                        self._create_tooltip(b, tip)
                     except: pass
                 
                 self.after(0, _update_ui)
-                time.sleep(0.01) # Small breathe to avoid slamming main thread
-            except Exception: continue
+            except: pass
+
+        # Parallelize the checks (up to 10 concurrent disk scans)
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            executor.map(_check_status, queue)
+            
+        self.after(0, self.lbl_lib_refresh_status.pack_forget)
         self.set_active_task(None)
 
     def _background_discovery_task(self):
@@ -1336,82 +1643,8 @@ class SpotDLApp(ctk.CTk):
             self.set_active_task(None)
 
     def _render_library_items_recursive(self, parent, items, level=0):
-        """Internal recursive renderer."""
-        for i, item in enumerate(items):
-            item_type = item.get("type", "playlist")
-            
-            if item_type == "group":
-                # Render Group Header
-                group_frame = ctk.CTkFrame(parent, fg_color="#2b2b2b" if level == 0 else "transparent")
-                group_frame.pack(fill="x", padx=(level * 20 + 5, 5), pady=2)
-                
-                exp_char = "▼" if item.get("expanded", True) else "▶"
-                btn_toggle = ctk.CTkButton(group_frame, text=exp_char, width=20, height=20, fg_color="transparent",
-                                          hover_color="#333333", command=lambda it=item: self._toggle_group(it))
-                btn_toggle.pack(side="left", padx=5)
-                
-                lbl_group = ctk.CTkLabel(group_frame, text=item.get("name", "New Group"), font=("Arial", 14, "bold"), text_color="#1DB954")
-                lbl_group.pack(side="left", padx=5)
-
-                # Action Buttons for Group
-                ctk.CTkButton(group_frame, text="✖", width=20, height=20, fg_color="transparent", 
-                              hover_color="red", command=lambda it=item: self._remove_group(it)).pack(side="right", padx=5)
-                
-                ctk.CTkButton(group_frame, text="✎", width=20, height=20, fg_color="transparent", 
-                              hover_color="#3a3a3a", command=lambda it=item: self._rename_group(it)).pack(side="right", padx=5)
-
-                if item.get("expanded", True):
-                    child_items = item.get("items", [])
-                    if not child_items:
-                        ctk.CTkLabel(parent, text="  (Empty Group)", font=("Arial", 10, "italic"), text_color="gray").pack(fill="x", padx=(level * 20 + 40, 0))
-                    else:
-                        self._render_library_items(parent, child_items, level + 1)
-                
-            else:
-                # Render Playlist Card
-                card = ctk.CTkFrame(parent)
-                card.pack(fill="x", padx=(level * 20 + 5, 5), pady=2)
-                
-                # Drag handle (Simplified for now - only moves within current list)
-                handle = ctk.CTkLabel(card, text="⠿", font=("Arial", 16), cursor="fleur", text_color="gray")
-                handle.pack(side="left", padx=(10, 5))
-                handle.bind("<Button-1>", lambda e, it_list=items, idx=i: self._on_drag_start(e, it_list, idx))
-                handle.bind("<B1-Motion>", self._on_drag_motion)
-                handle.bind("<ButtonRelease-1>", self._on_drag_stop)
-
-                raw_name = item.get("name", "Unknown")
-                lbl_name = ctk.CTkLabel(card, text=raw_name, font=("Arial", 11, "bold"))
-                lbl_name.pack(side="left", padx=5)
-
-                # Sync Status (Placeholder initially)
-                target_count = item.get('total_tracks') or 0
-                lbl_status = ctk.CTkLabel(card, text="[Checking...]", font=("Arial", 10, "bold"), text_color="gray")
-                lbl_status.pack(side="left", padx=5)
-                
-                # Container for extras label
-                extras_container = ctk.CTkFrame(card, fg_color="transparent")
-                extras_container.pack(side="left")
-
-                self._lib_status_queue.append((item, lbl_status, extras_container))
-
-                # Right side buttons
-                ctk.CTkButton(card, text="Remove", width=55, height=24, fg_color="red", hover_color="darkred",
-                              command=lambda it_list=items, idx=i: self._remove_item_from_list(it_list, idx)).pack(side="right", padx=5)
-                
-                btn_sync_item = ctk.CTkButton(card, text="Sync", width=55, height=24, fg_color="green", hover_color="darkgreen")
-                btn_sync_item.configure(command=lambda u=item.get('url'), n=item.get('name'), b=btn_sync_item, lp=item.get('local_path'): 
-                                             self.sync_individual(u, n, b, lp))
-                btn_sync_item.pack(side="right", padx=5)
-                
-                playlist_path = self._get_item_path(item)
-                btn_folder = ctk.CTkButton(card, text="📂", width=25, height=24, fg_color="transparent", hover_color="#333333",
-                                          command=lambda p=playlist_path: self.open_file_explorer(p))
-                btn_folder.pack(side="right", padx=5)
-
-                # Move to Group Button
-                btn_move = ctk.CTkButton(card, text="➔📁", width=25, height=24, fg_color="transparent", hover_color="#333333",
-                                        command=lambda it=item, it_list=items: self._show_move_to_group_dialog(it, it_list))
-                btn_move.pack(side="right", padx=2)
+        """Internal recursive renderer - DEPRECATED in favor of staggered _render_library_items."""
+        pass
 
     def _get_item_path(self, item):
         """Helper to get local path for a playlist item."""
@@ -1515,6 +1748,8 @@ class SpotDLApp(ctk.CTk):
         secret = self.config_manager.get("spotify_client_secret")
         if not cid or not secret: return
 
+        self.lbl_lib_refresh_status.pack(side="left", padx=20)
+
         def work():
             self.set_active_task("Refreshing Library Metadata")
             self.log_message("Refreshing Library metadata recursively...")
@@ -1522,45 +1757,68 @@ class SpotDLApp(ctk.CTk):
             auth_manager = SpotifyClientCredentials(client_id=cid, client_secret=secret)
             sp = spotipy.Spotify(auth_manager=auth_manager)
             
-            def _refresh_recursive(items):
-                count = 0
-                for item in items:
-                    if item.get("type", "playlist") == "playlist":
-                        url = item.get('url', '')
-                        try:
-                            # Throttling to prevent 429 Rate Limit
-                            time.sleep(0.5)
-                            
-                            if 'playlist' in url:
-                                data = sp.playlist(url, fields="name,tracks.total")
-                                item['name'] = data.get('name', item['name'])
-                                item['total_tracks'] = data['tracks']['total']
-                            elif 'album' in url:
-                                data = sp.album(url)
-                                item['name'] = data.get('name', item['name'])
-                                item['total_tracks'] = data['tracks']['total']
-                            
-                            # Pass shared sp client to avoid redundant auth
-                            item['expected_files'] = self._get_expected_filenames(url, sp=sp)
-                            count += 1
-                        except Exception as e:
-                            self.log_message(f"Error refreshing metadata for {url}: {e}")
-                    elif item.get("type") == "group":
-                        count += _refresh_recursive(item.get("items", []))
-                return count
+            def _get_flattened(items):
+                res = []
+                for it in items:
+                    if it.get("type", "playlist") == "playlist": res.append(it)
+                    elif it.get("type") == "group": res.extend(_get_flattened(it.get("items", [])))
+                return res
+            
+            all_playlists = _get_flattened(library)
+            total_pl = len(all_playlists)
+            completed = [0]
 
-            updated = _refresh_recursive(library)
+            def _refresh_item(item):
+                url = item.get('url', '')
+                if not url: return
+                try:
+                    # Parallel refresh is faster, but we keep a small jitter to stay 429-safe
+                    time.sleep(0.1)
+                    
+                    if 'playlist' in url:
+                        data = self._safe_spotify_call(sp.playlist, url, fields="name,tracks.total")
+                        if data:
+                            item['name'] = data.get('name', item['name'])
+                            item['total_tracks'] = data['tracks']['total']
+                    elif 'album' in url:
+                        data = self._safe_spotify_call(sp.album, url)
+                        if data:
+                            item['name'] = data.get('name', item['name'])
+                            item['total_tracks'] = data['tracks']['total']
+                    
+                    variants_list, max_spotify_date = self._get_expected_filenames(url, sp=sp)
+                    item['expected_files'] = variants_list
+                    item['total_tracks'] = len(variants_list)
+                    
+                    if 'last_synced' not in item:
+                        item['last_synced'] = item.get('last_downloaded')
+                        
+                    item['last_checked'] = datetime.now().isoformat()
+                    if max_spotify_date:
+                        item['spotify_updated'] = max_spotify_date
+                    
+                    completed[0] += 1
+                    prog = f"Refreshing Metadata ({completed[0]}/{total_pl})"
+                    self.after(0, lambda: self.lbl_lib_refresh_status.configure(text=f"🔄 {prog}..."))
+                except Exception as e:
+                    self.log_message(f"Error refreshing metadata for {url}: {e}")
+
+            # Parallelize API calls (max 5 workers to avoid aggressive 429s)
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                executor.map(_refresh_item, all_playlists)
+
             self.config_manager.set("library", library)
             self.set_active_task(None)
+            self.after(0, self.lbl_lib_refresh_status.pack_forget)
             self.after(0, self.refresh_library_ui) 
-            self.after(0, lambda: messagebox.showinfo("Refresh Complete", f"Updated {updated} items."))
+            self.after(0, lambda: messagebox.showinfo("Refresh Complete", f"Successfully refreshed {total_pl} library items."))
 
         threading.Thread(target=work, daemon=True).start()
 
     def _get_expected_filenames(self, spotify_url, sp=None):
-        """Helper to fetch tracklist and return list of sanitized {artist} - {title} basenames."""
+        """Helper to fetch tracklist and return (list of variants per track, max_spotify_date)."""
         if not SPOTIPY_AVAILABLE or not spotify_url:
-            return []
+            return [], None
             
         try:
             if not sp:
@@ -1570,33 +1828,110 @@ class SpotDLApp(ctk.CTk):
                 sp = spotipy.Spotify(auth_manager=auth_manager)
             
             tracks = []
+            max_date = None
+            
             if 'playlist' in spotify_url:
-                results = sp.playlist_items(spotify_url, fields="items(track(name,artists(name))),next")
-                tracks.extend(results['items'])
-                while results['next']:
-                    results = sp.next(results)
+                # Include added_at to track when the playlist was last updated on Spotify
+                results = self._safe_spotify_call(sp.playlist_items, spotify_url, fields="items(added_at,track(name,artists(name))),next")
+                if results and 'items' in results:
                     tracks.extend(results['items'])
+                    while results['next']:
+                        results = self._safe_spotify_call(sp.next, results)
+                        if not results: break
+                        tracks.extend(results['items'])
+                
+                # Extract max added_at
+                dates = [i.get('added_at') for i in tracks if i.get('added_at')]
+                if dates:
+                    max_date = max(dates)
             elif 'album' in spotify_url:
-                results = sp.album_tracks(spotify_url)
-                tracks = [{"track": t} for t in results['items']]
-                while results['next']:
-                    results = sp.next(results)
-                    tracks.extend([{"track": t} for t in results['items']])
+                album_data = self._safe_spotify_call(sp.album, spotify_url)
+                if album_data:
+                    max_date = album_data.get('release_date')
+                
+                results = self._safe_spotify_call(sp.album_tracks, spotify_url)
+                if results and 'items' in results:
+                    tracks = [{"track": t} for t in results['items']]
+                    while results['next']:
+                        results = self._safe_spotify_call(sp.next, results)
+                        if not results: break
+                        tracks.extend([{"track": t} for t in results['items']])
 
-            expected = []
+            expected_variants = []
             for item in tracks:
                 t = item.get('track')
                 if not t: continue
-                artist = t['artists'][0]['name']
+                
+                artists = [a['name'] for a in t['artists']]
                 title = t['name']
-                raw_base = f"{artist} - {title}"
-                for char in '<>:"/\\|?*':
-                    raw_base = raw_base.replace(char, '_')
-                expected.append(raw_base.lower())
-            return expected
+                
+                # VARIANT EXPLOSION ENGINE
+                # -------------------------
+                base_variants = []
+                
+                # 1. Primary Artist only
+                primary = artists[0]
+                base_variants.append(f"{primary} - {title}")
+                
+                # 2. All Artists with different separators
+                if len(artists) > 1:
+                    # spotDL default: "Artist 1, Artist 2 - Title"
+                    base_variants.append(f"{', '.join(artists)} - {title}")
+                    # Common alternative: "Artist 1 & Artist 2 - Title"
+                    base_variants.append(f"{' & '.join(artists)} - {title}")
+                    # Common alternative: "Artist 1 and Artist 2 - Title"
+                    base_variants.append(f"{' and '.join(artists)} - {title}")
+                    # Space separated: "Artist 1 Artist 2 - Title"
+                    base_variants.append(f"{' '.join(artists)} - {title}")
+
+                # 3. Handle (feat. X) variations in Title
+                # Some spotDL versions move feat to the end or strip it
+                expanded = []
+                for bv in base_variants:
+                    expanded.append(bv)
+                    if " (feat. " in bv:
+                        # Variant without feat. suffix
+                        expanded.append(bv.split(" (feat. ")[0])
+                    elif " feat. " in bv:
+                        expanded.append(bv.split(" feat. ")[0])
+
+                # Sanitize all and deduplicate
+                track_variants = set()
+                for v in expanded:
+                    sanitized = self._sanitize_filename(v).lower()
+                    if sanitized:
+                        track_variants.add(sanitized)
+                
+                expected_variants.append(list(track_variants))
+                
+            return expected_variants, max_date
         except Exception as e:
             self.log_message(f"Error fetching expected filenames: {e}")
             return []
+
+    def _update_item_timestamps(self, url, downloaded=False, checked=False):
+        """Helper to update timestamp fields for a playlist in the library."""
+        library = self.config_manager.get("library") or []
+        norm_url = self._normalize_spotify_url(url)
+        now = datetime.now().isoformat()
+        
+        def _update_recursive(items):
+            found = False
+            for item in items:
+                if item.get("type", "playlist") == "playlist":
+                    if self._normalize_spotify_url(item.get("url")) == norm_url:
+                        if checked: 
+                            item['last_checked'] = now
+                            item['last_synced'] = now # New consistent field
+                        if downloaded: item['last_downloaded'] = now
+                        found = True
+                elif item.get("type") == "group":
+                    if _update_recursive(item.get("items", [])):
+                        found = True
+            return found
+
+        if _update_recursive(library):
+            self.config_manager.set("library", library)
 
     def _on_drag_start(self, event, item_list, index):
         """Initializes drag-and-drop reordering within a specific list (root or group)."""
@@ -1640,93 +1975,20 @@ class SpotDLApp(ctk.CTk):
         if url:
             name = simpledialog.askstring("Name", "Enter a name for this playlist:") or "Untitled Playlist"
             library = self.config_manager.get("library")
-            library.append({"url": self._normalize_spotify_url(url), "name": name})
+            new_item = {
+                "url": self._normalize_spotify_url(url), 
+                "name": name,
+                "last_checked": datetime.now().isoformat()
+            }
+            library.append(new_item)
             self.config_manager.set("library", library)
             
             # Add to History
             self.history_manager.add_entry(url, 0, name=f"[MANUAL] {name}")
+            self.after(0, self.refresh_history_ui)
             
             self.refresh_library_ui()
 
-    def view_extras(self, folder_path, playlist_name, spotify_url=None):
-        """Shows only files in the folder that are NOT part of the Spotify playlist."""
-        if not os.path.exists(folder_path):
-            messagebox.showwarning("Not Found", "Folder no longer exists.")
-            return
-
-        # Try to find the library item to use cached expected_files
-        cached_expected = None
-        flat_library = self._flatten_library()
-        for item in flat_library:
-            if item.get('url') == spotify_url:
-                cached_expected = item.get('expected_files')
-                break
-
-        def work():
-            self.log_message(f"Analyzing extras for: {playlist_name}...")
-            
-            local_files = []
-            try:
-                local_files = [f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))]
-            except Exception as e:
-                self.after(0, lambda: messagebox.showerror("Error", f"Could not list files: {e}"))
-                return
-
-            expected_basenames = set()
-            if cached_expected:
-                expected_basenames = set(f.lower() for f in cached_expected)
-            elif spotify_url and SPOTIPY_AVAILABLE:
-                # Fallback to fetching if not cached
-                expected_basenames = set(self._get_expected_filenames(spotify_url))
-
-            # Filter logic
-            extras = []
-            music_extensions = ('.mp3', '.flac', '.m4a', '.opus', '.ogg', '.wav')
-            
-            for f in local_files:
-                # 1. Skip system files
-                if f.startswith('.') or f.lower() in ('desktop.ini', 'thumbs.db', 'playlist.json'):
-                    continue
-                
-                # 2. Skip spotdl specific metadata
-                if f.endswith('.spotdl-cache'):
-                    continue
-                
-                # 3. If it's music, check if it's in expected list
-                if f.lower().endswith(music_extensions):
-                    # Strip extension and check
-                    base = os.path.splitext(f)[0].lower()
-                    if base in expected_basenames:
-                        continue
-                
-                extras.append(f)
-
-            # Show results in main thread
-            self.after(0, lambda: self._show_extras_window(playlist_name, sorted(extras)))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _show_extras_window(self, playlist_name, extras):
-        win = ctk.CTkToplevel(self)
-        win.title(f"Extra Files: {playlist_name}")
-        win.geometry("500x450")
-        win.attributes("-topmost", True)
-        
-        ctk.CTkLabel(win, text=f"Unrecognized Files in: {playlist_name}", font=("Arial", 16, "bold")).pack(pady=10)
-        
-        if not extras:
-            ctk.CTkLabel(win, text="No extra files found! (Only official tracks/metadata present)").pack(pady=40)
-        else:
-            ctk.CTkLabel(win, text=f"Found {len(extras)} unrecognized files:", font=("Arial", 12)).pack()
-            
-            txt = ctk.CTkTextbox(win, width=460, height=300)
-            txt.pack(pady=10, padx=10)
-            
-            for f in extras:
-                txt.insert("end", f + "\n")
-            txt.configure(state="disabled")
-        
-        ctk.CTkButton(win, text="Close", command=win.destroy).pack(pady=10)
 
     def import_existing_folder(self):
         """Allows importing an existing folder and linking it to a Spotify URL."""
@@ -1805,7 +2067,8 @@ class SpotDLApp(ctk.CTk):
                 new_item = {
                     "url": url,
                     "name": pl_name,
-                    "total_tracks": track_count
+                    "total_tracks": track_count,
+                    "last_checked": datetime.now().isoformat()
                 }
                 if local_path:
                     new_item["local_path"] = local_path
@@ -1815,7 +2078,7 @@ class SpotDLApp(ctk.CTk):
                 
                 # Add to History
                 self.history_manager.add_entry(url, track_count, name=f"[IMPORTED] {pl_name}")
-                
+                self.after(0, self.refresh_history_ui)
                 self.after(0, self.refresh_library_ui)
                 self.set_active_task(None)
                 self.after(0, lambda: messagebox.showinfo("Import Success", f"Successfully linked '{pl_name}' to the library."))
@@ -1878,9 +2141,17 @@ class SpotDLApp(ctk.CTk):
             try: os.makedirs(target_cwd, exist_ok=True)
             except: pass
 
+        # Track progress for crash recovery
+        self._set_item_progress_flag(url, True)
         success, tracks = self.download_synchronously(url, cwd=target_cwd)
+        self._set_item_progress_flag(url, False)
+        
+        # Update sync_interrupted flag based on success
+        self._set_item_interrupted_flag(url, not success)
         
         # Final UI update
+        self._update_item_timestamps(url, downloaded=(len(tracks) > 0), checked=True)
+        
         self.set_active_task(None)
         self.after(0, self.refresh_library_ui)
         self.set_active_task(None)
@@ -1893,6 +2164,14 @@ class SpotDLApp(ctk.CTk):
             for track in tracks:
                 self.log_download(track)
             
+            if button:
+                def _safe_button_reset_success():
+                    try:
+                        if button.winfo_exists():
+                            button.configure(state="normal", text="Sync", fg_color="green")
+                    except: pass
+                self.after(0, _safe_button_reset_success)
+            
             # Format track list for popup
             if count > 0:
                 display_tracks = tracks[:10]
@@ -1901,13 +2180,21 @@ class SpotDLApp(ctk.CTk):
                     tracks_str += f"\n... and {count - 10} more"
                 msg = f"Finished syncing '{name}'.\n\nNewly Synced Songs:\n- {tracks_str}"
             else:
+                # Log an "Up-to-date" entry so user sees the check in history
+                self.history_manager.add_entry(url, 0, name=f"[SYNC] {name} (Up-to-date)")
+                self.after(0, self.refresh_history_ui)
                 msg = f"Finished syncing '{name}'.\n(All tracks were already up to date)"
                 
             self.after(0, lambda: messagebox.showinfo("Sync Complete", msg))
         else:
             self.log_message(f"Failed to sync {name}. Check logs.")
             if button:
-                self.after(0, lambda: button.configure(state="normal", text="Sync", fg_color="green"))
+                def _safe_button_reset():
+                    try:
+                        if button.winfo_exists():
+                            button.configure(state="normal", text="Sync", fg_color="green")
+                    except: pass
+                self.after(0, _safe_button_reset)
 
     def run_batch_sync(self, library):
         self.set_active_task("Batch Syncing")
@@ -1933,9 +2220,16 @@ class SpotDLApp(ctk.CTk):
             if not os.path.exists(target_cwd):
                 os.makedirs(target_cwd, exist_ok=True)
                 
+            self._set_item_progress_flag(item['url'], True)
             success, tracks = self.download_synchronously(item['url'], cwd=target_cwd)
+            self._set_item_progress_flag(item['url'], False)
+            
+            self._set_item_interrupted_flag(item['url'], not success)
+            
             if success:
                 all_new_tracks.extend(tracks)
+                # Update last_downloaded if tracks > 0, always check
+                self._update_item_timestamps(item['url'], downloaded=(len(tracks) > 0), checked=True)
                 for track in tracks:
                     self.log_download(track)
         
@@ -1957,7 +2251,7 @@ class SpotDLApp(ctk.CTk):
 
 
 
-    def download_synchronously(self, url, cwd=None, status_callback=None, max_retries=3):
+    def download_synchronously(self, url, cwd=None, status_callback=None, max_retries=6):
         """Helper to run download and wait for it (used in batch)."""
         cookie_file = self.config_manager.get("cookie_file")
         
@@ -1979,7 +2273,9 @@ class SpotDLApp(ctk.CTk):
 
         # Use unified command helper (normalize URL here too)
         normalized_url = self._normalize_spotify_url(url)
-        cmd = self._get_spotdl_command(normalized_url, fmt="flac") # Sync defaults to high quality flac
+        cmd = self._get_spotdl_command(normalized_url, fmt="flac")
+        downloaded_tracks = []
+        playlist_name = None
         
         for attempt in range(1, max_retries + 1):
             try:
@@ -1995,15 +2291,43 @@ class SpotDLApp(ctk.CTk):
                     bufsize=1
                 )
                 
-                downloaded_tracks = []
                 process_output = [] # Capture full output for debugging
+                rate_limit_detected = False
                 
-                playlist_name = None
                 for line in process.stdout:
                     line = line.strip()
                     if line:
                         self.log_message(line)
                         process_output.append(line)
+                        
+                        # Detect Rate Limit Warnings (from spotdl or spotipy)
+                        trig = line.lower()
+                        # Refined: Only trigger for 429/Rate Limit related to Spotify, ignore lyrics providers
+                        if ("429" in line or "rate/request limit" in trig or "max retries reached" in trig or "responseerror" in trig) and "spotify" in trig:
+                            rate_limit_detected = True
+                        
+                        # Catch extreme "Retry after X s" and kill process
+                        if "retry will occur after:" in trig:
+                            try:
+                                match = re.search(r"after:\s*(\d+)", trig)
+                                if match:
+                                    seconds = int(match.group(1))
+                                    if seconds > 600:
+                                        self.log_message(f"CRITICAL: Extreme subprocess rate limit detected ({seconds}s). Terminating process.")
+                                        
+                                        # Phase 76: Mark as Interrupted immediately
+                                        self.history_manager.add_entry(url, downloaded_tracks, name=playlist_name)
+                                        self.history_manager.history[-1]['interrupted'] = True
+                                        self.history_manager.save_history()
+                                        self.after(0, self.refresh_history_ui)
+                                        
+                                        process.terminate()
+                                        rate_limit_detected = True
+                                        # Use a special flag to indicated hard abort
+                                        raise Exception("EXTREME_RATE_LIMIT_ABORT")
+                            except Exception as e:
+                                if str(e) == "EXTREME_RATE_LIMIT_ABORT": raise e
+                                pass
                         
                         # Try to detect playlist/track name from output
                         if 'Processing' in line and not playlist_name:
@@ -2015,9 +2339,10 @@ class SpotDLApp(ctk.CTk):
                         if 'Downloaded "' in line:
                              try:
                                 track_name = line.split('Downloaded "')[1].split('"')[0]
-                                downloaded_tracks.append(track_name)
-                                if status_callback:
-                                    self.after(0, lambda t=track_name: status_callback(t))
+                                if track_name not in downloaded_tracks:
+                                    downloaded_tracks.append(track_name)
+                                    if status_callback:
+                                        self.after(0, lambda t=track_name: status_callback(t))
                              except IndexError:
                                 pass
                         elif 'Downloading' in line and status_callback:
@@ -2030,13 +2355,18 @@ class SpotDLApp(ctk.CTk):
                      name = None
                      library = self.config_manager.get("library") or []
                      for item in library:
-                         if item['url'] == url:
+                         if item.get('url') == url: # Safe get to avoid KeyError on folders
                              name = item.get('name')
                              break
                      
                      self.history_manager.add_entry(url, downloaded_tracks, name=name)
+                     # If returncode is non-zero, it was partial/interrupted even if some tracks downloaded
+                     if process.returncode != 0:
+                         self.history_manager.history[-1]['interrupted'] = True
+                         self.history_manager.save_history()
+                         
                      self.after(0, self.refresh_history_ui)
-                     return True, downloaded_tracks
+                     return (process.returncode == 0), downloaded_tracks
                 
                 # Check return code
                 if process.returncode == 0:
@@ -2045,19 +2375,52 @@ class SpotDLApp(ctk.CTk):
                 else:
                     self.log_message(f"Attempt {attempt} failed with code {process.returncode}")
                     if attempt < max_retries:
-                        self.log_message("Retrying in 3 seconds...")
-                        time.sleep(3)
+                        if rate_limit_detected:
+                            wait_time = min(300, 60 * attempt) # 60, 120, 180... up to 300s
+                            self.log_message(f"⚠️ Spotify Rate Limit hit in subprocess. Aggressive cooling down for {wait_time}s...")
+                        else:
+                            wait_time = 3
+                            self.log_message(f"Retrying in {wait_time}s...")
+                        
+                        time.sleep(wait_time)
                         continue
                      
             except Exception as e:
+                if str(e) == "EXTREME_RATE_LIMIT_ABORT":
+                     self.log_message(f"Aborting sync for {url} due to extreme rate limit.")
+                     # Return False immediately to trigger UI "Interrupted" state
+                     return False, downloaded_tracks
+
                 self.log_message(f"Error syncing {url}: {e}")
                 if attempt < max_retries:
-                    self.log_message("Retrying in 3 seconds...")
-                    time.sleep(3)
+                    # Internal logic error (like KeyError) shouldn't trigger an aggressive 5min cooldown
+                    is_logic_error = isinstance(e, KeyError)
+                    
+                    if rate_limit_detected and not is_logic_error:
+                        wait_time = min(300, 60 * attempt)
+                        self.log_message(f"⚠️ Spotify Rate Limit hit in subprocess (Exception). Aggressive cooling down for {wait_time}s...")
+                    else:
+                        wait_time = 3
+                        self.log_message(f"Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
                     continue
 
         # If we reach here, all retries failed
         self.log_message("All retry attempts failed.")
+        
+        # Phase 78: Force History Entry for Failed Sync
+        # Try to resolve name if we didn't catch it in output
+        if not playlist_name:
+             library = self.config_manager.get("library") or []
+             for item in library:
+                 if item.get('url') == url:
+                     playlist_name = item.get('name')
+                     break
+
+        self.history_manager.add_entry(url, [], name=playlist_name)
+        self.history_manager.history[-1]['interrupted'] = True
+        self.history_manager.save_history()
+        self.after(0, self.refresh_history_ui)
         
         # Show debug info to user
         tail = "\n".join(process_output[-10:]) if 'process_output' in locals() and process_output else "No output captured."
@@ -2077,7 +2440,12 @@ class SpotDLApp(ctk.CTk):
         self.history_frame = ctk.CTkScrollableFrame(self.tab_history)
         self.history_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
         
-        ctk.CTkButton(self.tab_history, text="Refresh", command=self.refresh_history_ui).grid(row=2, column=0, pady=10)
+        # Button Row
+        btn_row = ctk.CTkFrame(self.tab_history, fg_color="transparent")
+        btn_row.grid(row=2, column=0, pady=10)
+        
+        ctk.CTkButton(btn_row, text="Refresh", command=self.refresh_history_ui).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row, text="Clear History", command=self.confirm_clear_history, fg_color="red", hover_color="darkred").pack(side="left", padx=5)
         
         self.refresh_history_ui()
 
@@ -2133,7 +2501,8 @@ class SpotDLApp(ctk.CTk):
         for widget in self.history_frame.winfo_children():
             widget.destroy()
             
-        history = self.history_manager.load_history()
+        # Use live list from manager instead of reloading from disk
+        history = self.history_manager.history
         if not history:
             ctk.CTkLabel(self.history_frame, text="No history found.").pack(pady=20)
             return
@@ -2143,16 +2512,14 @@ class SpotDLApp(ctk.CTk):
         history_updated = False
 
         for i, entry in enumerate(history_items):
-            # ... UI creation ...
             card = ctk.CTkFrame(self.history_frame)
-            card.pack(fill="x", padx=5, pady=5)
+            card.pack(fill="x", padx=5, pady=2)
             
+            # Header with Name and Time
             top_row = ctk.CTkFrame(card, fg_color="transparent")
             top_row.pack(fill="x", padx=10, pady=5)
             
             ts = datetime.fromisoformat(entry['timestamp']).strftime("%m-%d %H:%M")
-            
-            # Resolve name
             entry_name = entry.get('name')
             source_url = entry.get('source', 'Unknown')
             
@@ -2160,8 +2527,6 @@ class SpotDLApp(ctk.CTk):
                 resolved = self.resolve_name_from_url(source_url)
                 if resolved and resolved != source_url:
                     entry_name = resolved
-                    # Persist it back to history so we don't API call every time
-                    # We need to find the correct index in the original 'history' list
                     orig_idx = len(history) - 1 - i
                     history[orig_idx]['name'] = resolved
                     history_updated = True
@@ -2170,8 +2535,11 @@ class SpotDLApp(ctk.CTk):
             if len(display_name) > 60:
                 display_name = display_name[:57] + "..."
                 
-            lbl_info = ctk.CTkLabel(top_row, text=f"{ts} - {display_name}", 
+            interrupted_tag = " [Interrupted]" if entry.get('interrupted') else ""
+            lbl_info = ctk.CTkLabel(top_row, text=f"{ts} - {display_name}{interrupted_tag}", 
                                     font=("Arial", 12, "bold"), anchor="w")
+            if interrupted_tag:
+                lbl_info.configure(text_color="orange")
             lbl_info.pack(side="left", fill="x", expand=True)
 
             count = entry.get('count', 0)
@@ -2336,9 +2704,10 @@ class SpotDLApp(ctk.CTk):
                                             command=self.toggle_download_feed)
         self.btn_toggle_feed.pack(side="right")
 
-        # Scrollable Frame for the Feed
-        self.download_feed_frame = ctk.CTkScrollableFrame(self.tab_logs, height=150, label_text="Session History")
-        self.download_feed_frame.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
+        # Textbox for the Feed (More reliable than many labels)
+        self.txt_feed = ctk.CTkTextbox(self.tab_logs, height=150, font=("Arial", 12))
+        self.txt_feed.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
+        self.txt_feed.configure(state="disabled")
         
         # Divider/Label for Technical Logs
         ctk.CTkLabel(self.tab_logs, text="Technical Debug Logs", font=("Arial", 10, "italic"), text_color="gray").grid(row=2, column=0, padx=10, pady=(5, 0), sticky="w")
@@ -2351,11 +2720,11 @@ class SpotDLApp(ctk.CTk):
     def toggle_download_feed(self):
         """Toggles the visibility of the download feed."""
         if self.feed_expanded:
-            self.download_feed_frame.grid_forget()
+            self.txt_feed.grid_forget()
             self.btn_toggle_feed.configure(text="Expand")
             self.feed_expanded = False
         else:
-            self.download_feed_frame.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
+            self.txt_feed.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
             self.btn_toggle_feed.configure(text="Collapse")
             self.feed_expanded = True
 
@@ -2364,12 +2733,12 @@ class SpotDLApp(ctk.CTk):
         self.session_new_downloads.append(track_name)
         
         def _update_feed():
-            # Create a small label for each track in the feed
             ts = datetime.now().strftime('%H:%M:%S')
-            lbl = ctk.CTkLabel(self.download_feed_frame, text=f"[{ts}] {track_name}", 
-                               font=("Arial", 11), anchor="w", justify="left")
-            lbl.pack(fill="x", padx=5, pady=2)
-            # Auto-scroll not easily supported in CTkScrollableFrame via code, but we pack at bottom
+            if hasattr(self, 'txt_feed'):
+                self.txt_feed.configure(state="normal")
+                self.txt_feed.insert("end", f"[{ts}] {track_name}\n")
+                self.txt_feed.configure(state="disabled")
+                self.txt_feed.see("end")
         
         self.after(0, _update_feed)
 
@@ -2548,16 +2917,9 @@ class SpotDLApp(ctk.CTk):
             
         self.btn_download.configure(state="normal", text="Download")
         self.lbl_status.configure(text="Download Completed!", text_color="green")
+        # No longer redundant: history handled in download_synchronously or batch
         self.log_message("Download finished successfully.")
-        
-        # Update History
-        if tracks:
-            self.history_manager.add_entry(url, tracks)
-            self.after(0, self.refresh_history_ui)
-            messagebox.showinfo("Success", f"Downloaded {len(tracks)} tracks successfully!")
-        else:
-             self.log_message("No new tracks were downloaded.")
-             messagebox.showinfo("Done", "Process finished. No new tracks downloaded.")
+        messagebox.showinfo("Success", f"Downloaded {len(tracks)} tracks successfully!")
 
     def on_download_error(self, error_msg):
         self.set_active_task(None)
@@ -2581,6 +2943,105 @@ class SpotDLApp(ctk.CTk):
         except (RuntimeError, Exception):
             # Fallback if after() fails due to main thread not being in loop
             pass
+
+    # --- Sync & History Helpers ---
+    def _set_item_interrupted_flag(self, url, is_interrupted):
+        """Sets the sync_interrupted flag for a library item."""
+        library = self.config_manager.get("library") or []
+        norm_url = self._normalize_spotify_url(url)
+        
+        def _set_rec(items):
+            for item in items:
+                if item.get("type", "playlist") == "playlist":
+                    if self._normalize_spotify_url(item.get("url")) == norm_url:
+                        item['sync_interrupted'] = is_interrupted
+                        return True
+                elif item.get("type") == "group":
+                    if _set_rec(item.get("items", [])): return True
+            return False
+            
+        if _set_rec(library):
+            self.config_manager.set("library", library)
+
+    def confirm_clear_history(self):
+        """Prompts and wipes history."""
+        if messagebox.askyesno("Clear History", "Are you sure you want to clear your download history?"):
+            self.history_manager.clear_history()
+            self.refresh_history_ui()
+            messagebox.showinfo("History Cleared", "History has been wiped.")
+
+    def _recover_interrupted_syncs(self):
+        """Checks library for items that were in progress when the app closed."""
+        library = self.config_manager.get("library") or []
+        updated = False
+        
+        def _rec(items):
+            nonlocal updated
+            for it in items:
+                if it.get("sync_in_progress"):
+                    it["sync_in_progress"] = False
+                    it["sync_interrupted"] = True
+                    updated = True
+                if it.get("type") == "group":
+                    _rec(it.get("items", []))
+                    
+        _rec(library)
+        if updated:
+            self.config_manager.set("library", library)
+
+    def _set_item_progress_flag(self, url, in_progress):
+        """Sets the sync_in_progress flag for a library item."""
+        library = self.config_manager.get("library") or []
+        norm_url = self._normalize_spotify_url(url)
+        
+        def _set_rec(items):
+            for item in items:
+                if item.get("type", "playlist") == "playlist":
+                    if self._normalize_spotify_url(item.get("url")) == norm_url:
+                        item['sync_in_progress'] = in_progress
+                        return True
+                elif item.get("type") == "group":
+                    if _set_rec(item.get("items", [])): return True
+            return False
+            
+        if _set_rec(library):
+            self.config_manager.set("library", library)
+
+    # --- UI Helpers ---
+    def _create_tooltip(self, widget, text):
+        """Simple hover tooltip for CTK widgets that supports dynamic updates."""
+        widget.tooltip_text = text
+        if hasattr(widget, "_has_tooltip_binding"):
+            return
+            
+        widget._has_tooltip_binding = True
+        tooltip_window = [None]
+        
+        def show_tooltip(event):
+            # Read text dynamically from the widget attribute
+            current_text = getattr(widget, "tooltip_text", "")
+            if tooltip_window[0] or not current_text: return
+            
+            x = event.x_root + 20
+            y = event.y_root + 10
+            
+            tw = ctk.CTkToplevel(self)
+            tw.wm_overrideredirect(True)
+            tw.geometry(f"+{x}+{y}")
+            tw.attributes("-topmost", True)
+            
+            label = ctk.CTkLabel(tw, text=current_text, fg_color="#333333", text_color="white", 
+                                 corner_radius=6, padx=10, pady=5, font=("Arial", 11))
+            label.pack()
+            tooltip_window[0] = tw
+
+        def hide_tooltip(event):
+            if tooltip_window[0]:
+                tooltip_window[0].destroy()
+                tooltip_window[0] = None
+
+        widget.bind("<Enter>", show_tooltip)
+        widget.bind("<Leave>", hide_tooltip)
 
 if __name__ == "__main__":
     app = SpotDLApp()
