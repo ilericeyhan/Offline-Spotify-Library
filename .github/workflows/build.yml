@@ -1,0 +1,86 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            artifact_name: SpotDL-GUI-Windows.zip
+            asset_name: SpotDL-GUI-Windows.zip
+          - os: macos-latest
+            artifact_name: SpotDL-GUI-macOS.zip
+            asset_name: SpotDL-GUI-macOS.zip
+          - os: ubuntu-latest
+            artifact_name: SpotDL-GUI-Linux.zip
+            asset_name: SpotDL-GUI-Linux.zip
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller spotdl-gui.spec
+
+      - name: Zip Artifact (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          compress-archive -Path dist/SpotDL-GUI/* -DestinationPath ${{ matrix.artifact_name }}
+
+      - name: Zip Artifact (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          cd dist
+          zip -r ../${{ matrix.artifact_name }} SpotDL-GUI.app
+
+      - name: Zip Artifact (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cd dist
+          zip -r ../${{ matrix.artifact_name }} SpotDL-GUI
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            SpotDL-GUI-Windows.zip/SpotDL-GUI-Windows.zip
+            SpotDL-GUI-macOS.zip/SpotDL-GUI-macOS.zip
+            SpotDL-GUI-Linux.zip/SpotDL-GUI-Linux.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

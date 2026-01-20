@@ -4,6 +4,10 @@
 
 This application provides a rich Graphical User Interface (GUI) for `spotdl`, allowing you to synchronize, manage, and organize your Spotify playlists for offline playback. It goes beyond simple downloading by offering a persistent library, drag-and-drop organization, and robust status tracking.
 
+## 💾 Download
+
+Ready-to-use binaries for **Windows**, **macOS**, and **Linux** are available on the [GitHub Releases](https://github.com/ilericeyhan/Offline-Spotify-Library/releases) page. No Python installation required!
+
 ## 🚀 Key Features
 
 ### 📚 Smart Library Management

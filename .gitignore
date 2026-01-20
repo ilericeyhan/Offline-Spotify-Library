@@ -15,7 +15,7 @@ env/
 # Distribution / Build
 build/
 dist/
-*.spec
+# *.spec (Allowing spec files for builds)
 
 # OS files
 .DS_Store
