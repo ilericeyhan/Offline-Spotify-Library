@@ -8,6 +8,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
+import webbrowser
 
 class ToolTip:
     """A simple ToolTip class for widgets."""
@@ -174,7 +175,15 @@ class SpotDLApp(ctk.CTk):
         self.lbl_lib_refresh_status.pack(side="left", padx=20)
         self._recover_interrupted_syncs()
         self.update_profile_display()
-        self.refresh_library_ui()
+        
+        # Only trigger full library refresh if logged in
+        has_creds = self.config_manager.get("spotify_client_id") and self.config_manager.get("spotify_client_secret")
+        if has_creds:
+            self.refresh_library_ui(remote_sync=True)
+        else:
+            # Still show local library but skip remote status checks
+            self.refresh_library_ui(remote_sync=False)
+            self.log_message("Offline: Spotify not connected. Remote sync skipped.")
 
     def log_message(self, message):
         """Logs a message to the Logs tab text area."""
@@ -370,17 +379,22 @@ class SpotDLApp(ctk.CTk):
             self.config_manager.set("spotify_client_id", cid)
             self.config_manager.set("spotify_client_secret", secret)
             
+            # Close dialog FIRST to avoid Z-order overlay issues with the messagebox
+            dialog.destroy()
+            
             messagebox.showinfo("Authorization", "1. Your browser will open to login to Spotify.\n"
                                                "2. After login, return here.\n\n"
                                                "Note: Large libraries take time. Please wait for the 'Ready' status.")
             
             try:
-                # Trigger auth flow
+                # Trigger auth flow and explicitly open browser
                 sp_oauth = SpotifyOAuth(client_id=cid, client_secret=secret, redirect_uri=REDIRECT_URI, scope=SCOPES)
-            except: pass
+                auth_url = sp_oauth.get_authorize_url()
+                webbrowser.open(auth_url)
+            except Exception as e:
+                self.log_message(f"Error opening browser: {e}")
 
-            self.update_profile_display()
-            dialog.destroy()
+            self.after(500, self.update_profile_display)
             
         ctk.CTkButton(dialog, text="Save & Login", command=start_auth, fg_color="green", hover_color="darkgreen").pack(pady=20)
 
@@ -1115,7 +1129,7 @@ class SpotDLApp(ctk.CTk):
         self.btn_sync.grid(row=2, column=0, pady=10)
         ToolTip(self.btn_sync, "Download all new content for every playlist in your library")
 
-    def refresh_library_ui(self):
+    def refresh_library_ui(self, remote_sync=True):
         """Reloads the library list with sync status, folder icons, and grouping support."""
         for widget in self.library_frame.winfo_children():
             widget.destroy()
@@ -1139,12 +1153,14 @@ class SpotDLApp(ctk.CTk):
             self.config_manager.set("library", library)
             self.log_message(f"Added {discovered_count} new playlists from history to library.")
 
-        if hasattr(self, '_discovery_running') and self._discovery_running:
-            pass # Already scanning
-        else:
-            threading.Thread(target=self._background_discovery_task, daemon=True).start()
+        if remote_sync:
+            if hasattr(self, '_discovery_running') and self._discovery_running:
+                pass # Already scanning
+            else:
+                threading.Thread(target=self._background_discovery_task, daemon=True).start()
 
         # 3. Render Library recursively
+        self._render_library_items(self.library_frame, library, remote_sync=remote_sync)
 
         if not library:
             notice_frame = ctk.CTkFrame(self.library_frame, fg_color="transparent")
@@ -1179,7 +1195,7 @@ class SpotDLApp(ctk.CTk):
                 urls.update(self._get_all_library_urls(item.get("items", [])))
         return urls
 
-    def _render_library_items(self, parent, items, level=0):
+    def _render_library_items(self, parent, items, level=0, remote_sync=True):
         """Recursively renders library items using a staggered approach to keep the UI snappy."""
         if level == 0:
             self._lib_status_queue = []
@@ -1217,8 +1233,12 @@ class SpotDLApp(ctk.CTk):
                             self.loading_lbl.destroy()
                     except: pass
                     
-                    if self._lib_status_queue:
+                    if self._lib_status_queue and remote_sync:
                         threading.Thread(target=self._async_lib_status_worker, daemon=True).start()
+                    else:
+                        # Clear the scanning indicator if skipping
+                        self.after(0, lambda: self.lbl_lib_refresh_status.configure(text=""))
+                        self.set_active_task(None)
 
         it = enumerate(items)
         render_staggered(it, level, parent, items)
