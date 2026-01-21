@@ -8,7 +8,7 @@ class ConfigManager:
     """
     DEFAULT_CONFIG = {
         "cookie_file": "",
-        "output_path": os.getcwd(),
+        "output_path": os.path.join(os.path.expanduser("~"), "Music", "SpotDL"),
         "spotify_client_id": "",
         "spotify_client_secret": "",
         "spotify_user_id": "",

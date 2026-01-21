@@ -1,5 +1,18 @@
 import re
+import os
+import sys
 from datetime import datetime
+
+def get_resource_path(relative_path: str) -> str:
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # For development, use the directory containing main.py (root)
+        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    return os.path.join(base_path, relative_path)
 
 def normalize_spotify_url(url: str) -> str:
     """Strips query parameters from Spotify URLs."""

@@ -54,6 +54,13 @@ Know the state of your library at a glance with **Smart Status Icons**:
 1. Clone the repository and navigate to the folder.
 2. Double-click `run.bat` to launch the application.
 
+### 🛡️ macOS Security
+If the "Right-click -> Open" method fails, you can manually whitelist the app by running this command in your terminal:
+
+```bash
+sudo xattr -rd com.apple.quarantine "/path/to/Offline-Spotify-Library.app"
+```
+
 ### Initial Configuration
 1.  Go to the **Settings** tab.
 2.  Set your **Output Path** (where music will be saved).

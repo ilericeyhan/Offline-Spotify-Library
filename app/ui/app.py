@@ -78,7 +78,7 @@ from app.core.history import HistoryManager
 from app.services.logger import LogService
 from app.services.spotify import SpotifyService
 from app.services.downloader import DownloaderService
-from app.utils import normalize_spotify_url, get_safe_dirname, format_timestamp
+from app.utils import normalize_spotify_url, get_safe_dirname, format_timestamp, get_resource_path
 from app.ui.dialogs.group_select import GroupSelectDialog
 from app.ui.dialogs.playlist_select import PlaylistSelectionDialog
 
@@ -101,7 +101,7 @@ class SpotDLApp(ctk.CTk):
         
         # Set App Icon
         try:
-            icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "icon.png")
+            icon_path = get_resource_path(os.path.join("app", "assets", "icon.png"))
             if os.path.exists(icon_path):
                 img = Image.open(icon_path)
                 # Keep a reference to prevent garbage collection
@@ -2356,7 +2356,7 @@ class SpotDLApp(ctk.CTk):
         
         # Logo
         try:
-            icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "icon.png")
+            icon_path = get_resource_path(os.path.join("app", "assets", "icon.png"))
             if os.path.exists(icon_path):
                 img = Image.open(icon_path)
                 logo_img = ctk.CTkImage(light_image=img, dark_image=img, size=(120, 120))
@@ -2371,6 +2371,7 @@ class SpotDLApp(ctk.CTk):
         # 2. Load and Basic Parse README.md
         content = ""
         possible_paths = [
+            get_resource_path("README.md"),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../README.md"),
             "README.md"
         ]
@@ -2508,7 +2509,7 @@ class SpotDLApp(ctk.CTk):
         
         # Logo
         try:
-            icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "icon.png")
+            icon_path = get_resource_path(os.path.join("app", "assets", "icon.png"))
             if os.path.exists(icon_path):
                 img = Image.open(icon_path)
                 logo_img = ctk.CTkImage(light_image=img, dark_image=img, size=(120, 120))
@@ -2523,6 +2524,7 @@ class SpotDLApp(ctk.CTk):
         # 2. Load README.md
         content = ""
         possible_paths = [
+            get_resource_path("README.md"),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../README.md"),
             "README.md"
         ]
