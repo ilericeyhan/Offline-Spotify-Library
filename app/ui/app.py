@@ -72,7 +72,7 @@ from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 import re
 
-from app.core.constants import APP_NAME, APP_VERSION, SPOTIPY_AVAILABLE, REDIRECT_URI, SCOPES
+from app.core.constants import APP_NAME, APP_VERSION, SPOTIPY_AVAILABLE, REDIRECT_URI, SCOPES, LOG_FILE
 from app.core.config import ConfigManager
 from app.core.history import HistoryManager
 from app.services.logger import LogService
@@ -115,7 +115,7 @@ class SpotDLApp(ctk.CTk):
         self.history_manager = HistoryManager()
         
         # Setup Services
-        self.logger = LogService(log_file="spotdl_debug.log")
+        self.logger = LogService(log_file=LOG_FILE)
         self.logger.set_gui_callback(self.log_message)
         
         self.spotify_service = SpotifyService(self.config_manager, self.logger)
