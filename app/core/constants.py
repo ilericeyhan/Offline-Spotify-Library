@@ -4,7 +4,7 @@ import customtkinter as ctk
 
 # --- Constants & Configuration ---
 APP_NAME = "Offline Spotify Library"
-APP_VERSION = "1.3.7"
+APP_VERSION = "1.3.8"
 
 # Standard cross-platform user data directory
 USER_DATA_DIR = os.path.join(os.path.expanduser("~"), "Library", "Application Support", APP_NAME) if sys.platform == "darwin" else \
