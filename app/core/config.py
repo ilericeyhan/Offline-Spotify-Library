@@ -14,6 +14,7 @@ class ConfigManager:
         "spotify_user_id": "",
         "spotdl_path": "",
         "log_level": "INFO",
+        "language": "en",
         "library": [],  # List of dicts: {"url": "...", "name": "...", "type": "playlist/user"}
         "ignored_library_urls": [], # URLs that should not be auto-added from history
         "playlist_usage": {} # Dict: {"playlist_id_or_name": count}

@@ -15,9 +15,15 @@ def get_resource_path(relative_path: str) -> str:
     return os.path.join(base_path, relative_path)
 
 def normalize_spotify_url(url: str) -> str:
-    """Strips query parameters from Spotify URLs."""
+    """Strips query parameters and handles URI formats for Spotify URLs."""
     if not url: return ""
-    return url.split('?')[0].split('&')[0]
+    # Standardize to URL format and strip noise
+    url = url.strip().split('?')[0].split('&')[0].rstrip('/')
+    if url.startswith('spotify:'):
+        parts = url.split(':')
+        if len(parts) >= 3:
+            return f"https://open.spotify.com/{parts[1]}/{parts[2]}"
+    return url
 
 def get_safe_dirname(name: str) -> str:
     """Sanitizes a string for use as a directory name."""

@@ -13,7 +13,10 @@ class DownloaderService:
         self.logger = logger
         self.active_process = None
 
-    def download(self, url, playlist_name=None, status_callback=None):
+    def download(self, url, playlist_name=None, status_callback=None, **kwargs):
+        cwd = kwargs.get('cwd')
+        
+        print(f"DEBUG: DownloaderService.download called with url={url}, cwd={cwd}")
         """
         Synchronously runs spotdl download for a given URL.
         Returns (success: bool, downloaded_tracks: list)
@@ -28,14 +31,16 @@ class DownloaderService:
             spotdl_path = "spotdl"
 
         # Construct Command
-        cmd = [spotdl_path, url, "--output", "{list}/{artist} - {title}.{output-ext}", "--overwrite", "skip"]
+        cmd = [spotdl_path, url, "--output", "{artists} - {title}.{output-ext}", "--overwrite", "skip"]
         
         # Add cookie file if provided
         if cookie_file and os.path.exists(cookie_file):
              cmd.extend(["--cookie-file", cookie_file])
 
         # Prepare working directory
-        cwd = output_path
+        if not cwd:
+            cwd = output_path
+            
         if not os.path.exists(cwd):
             try:
                 os.makedirs(cwd)
@@ -45,6 +50,7 @@ class DownloaderService:
         
         max_retries = 6
         downloaded_tracks = []
+        failed_tracks = []
         process_output = []
 
         for attempt in range(1, max_retries + 1):
@@ -69,6 +75,7 @@ class DownloaderService:
                     status_callback(f"Starting attempt {attempt}...")
 
                 rate_limit_detected = False
+                has_provider_errors = False
                 
                 # Real-time output reading
                 for line in process.stdout:
@@ -76,6 +83,22 @@ class DownloaderService:
                     if line:
                         self.logger.log(line)
                         process_output.append(line)
+                        
+                        # Provider Error Detection (Phase 104)
+                        if "AudioProviderError" in line or "LookupError" in line or "YT-DLP download error" in line:
+                            has_provider_errors = True
+                            
+                            # Phase 108: Extract failed track name if possible
+                            # Log format often: "AudioProviderError: ... - https://..." or "LookupError: ...: Artist - Title"
+                            try:
+                                if "LookupError" in line and "song:" in line:
+                                    failed_name = line.split("song:")[1].strip()
+                                    if failed_name not in failed_tracks: failed_tracks.append(failed_name)
+                                elif "AudioProviderError" in line and "http" not in line:
+                                     # Sometimes it's hard to get name from provider error without context, 
+                                     # but we catch what we can.
+                                     pass
+                            except: pass
                         
                         # Rate Limit Detection
                         trig = line.lower()
@@ -95,10 +118,7 @@ class DownloaderService:
                                         
                                         # Force History Entry (Phase 76)
                                         self.history.add_entry(url, downloaded_tracks, name=playlist_name)
-                                        # We need to access the last entry to mark interrupted. 
-                                        # This assumes add_entry appends to end.
-                                        self.history.history[-1]['interrupted'] = True
-                                        self.history.save_history()
+                                        # (Interrupted status will be set by the UI caller)
                                         
                                         raise Exception("EXTREME_RATE_LIMIT_ABORT")
                             except Exception as e:
@@ -124,15 +144,18 @@ class DownloaderService:
                      # Try to resolve name from config if missing (skipped here for simplicity, caller should provide)
                      
                      self.history.add_entry(url, downloaded_tracks, name=name)
-                     if process.returncode != 0:
-                         self.history.history[-1]['interrupted'] = True
-                         self.history.save_history()
                      
-                     return (process.returncode == 0), downloaded_tracks
+                     return (process.returncode == 0 and not has_provider_errors), downloaded_tracks, failed_tracks, False, None
 
                 if process.returncode == 0:
+                    if has_provider_errors:
+                        self.logger.warning("Download finished with provider errors (No new tracks).")
+                        self.history.add_entry(url, [], name=playlist_name)
+                        self.history.save_history()
+                        return False, [], failed_tracks, False, "Provider errors occurred (LookupError/AudioProviderError)"
+                        
                     self.logger.info("Download finished (No new tracks).")
-                    return True, []
+                    return True, [], [], False, None
                 
                 # Failure Handling
                 self.logger.info(f"Attempt {attempt} failed code {process.returncode}")
@@ -149,21 +172,23 @@ class DownloaderService:
                 is_extreme = str(e) == "EXTREME_RATE_LIMIT_ABORT"
                 if is_extreme:
                     if status_callback: status_callback("Aborted: Extreme Rate Limit")
-                    return False, downloaded_tracks
+                    error_msg = f"Extreme subprocess rate limit ({seconds}s). Aborted." if "seconds" in locals() else "Extreme rate limit aborted."
+                    return False, downloaded_tracks, failed_tracks, True, error_msg
                 
                 self.logger.error(f"Error syncing {url}: {e}")
                 if attempt < max_retries:
                     time.sleep(5)
+                else:
+                    return False, downloaded_tracks, failed_tracks, True, str(e)
 
         # All retries failed
         self.logger.error("All retry attempts failed.")
         
         # Force History Entry (Phase 78)
         self.history.add_entry(url, [], name=playlist_name)
-        self.history.history[-1]['interrupted'] = True
-        self.history.save_history()
+        # (Interrupted status will be set by the UI caller)
 
-        return False, []
+        return False, [], failed_tracks, True, "All retry attempts failed."
 
     def terminate(self):
         """Kills the active process if any."""

@@ -18,7 +18,8 @@ class LogService:
         self.gui_callback = callback
         
     def log(self, message: str):
-        """Logs to file and GUI."""
+        """Logs to file, GUI, and console."""
+        print(message)
         logging.info(message)
         if self.gui_callback:
             self.gui_callback(message)
@@ -28,3 +29,6 @@ class LogService:
         
     def error(self, message: str):
         self.log(f"ERROR: {message}")
+
+    def warning(self, message: str):
+        self.log(f"WARNING: {message}")

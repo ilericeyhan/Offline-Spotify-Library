@@ -1,0 +1,410 @@
+import os
+import json
+import logging
+
+class I18nService:
+    """
+    Handles translation and localization for the application.
+    """
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(I18nService, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self):
+        if self._initialized: return
+        self.logger = logging.getLogger("spotdl_gui")
+        self.lang = "en"
+        self.translations = {}
+        self._load_translations()
+        self._initialized = True
+
+    def _load_translations(self):
+        # Default translations as fallback
+        self.translations = {
+            "en": {
+                "library": "Library",
+                "profile": "My Profile",
+                "downloader": "Quick Download",
+                "history": "History",
+                "settings": "Settings",
+                "logs": "Logs",
+                "about": "About/FAQ",
+                "sync": "Sync",
+                "sync_all": "Sync All",
+                "status": "Status",
+                "tracks": "tracks",
+                "last_sync": "Last Sync",
+                "spotify_updated": "Spotify Updated",
+                "checking": "Checking...",
+                "synced": "Synced",
+                "new_songs": "New Songs Available",
+                "interrupted": "Interrupted",
+                "new": "New",
+                "details": "Details",
+                "save": "Save Settings",
+                "language": "Language",
+                "cookie_file": "Cookie File",
+                "output_path": "Download Path",
+                "client_id": "Spotify Client ID",
+                "client_secret": "Spotify Client Password",
+                "user_id": "Default User Name",
+                "log_level": "Log Level",
+                "refresh_status": "Refresh",
+                "import_folder": "Import Folder",
+                "add_profile": "Add from Profile",
+                "add_url": "Add link Manually",
+                "new_group": "New Group",
+                "browse": "Browse",
+                "download": "Download",
+                "clear_history": "Clear History",
+                "no_history": "No history found.",
+                "no_tracks_recorded": "No track details recorded.",
+                "error": "ERROR",
+                "aborted": "Aborted",
+                "login": "Login with Spotify",
+                "logout": "Logout",
+                "refresh": "Refresh",
+                "search": "Search",
+                "my_playlists": "My Playlists",
+                "created_by_me": "Created by Me",
+                "followed_playlists": "Followed Playlists",
+                "quick_download": "Quick Download",
+                "url_placeholder": "Enter Spotify Track or Playlist link",
+                "format": "Format",
+                "ready": "Ready",
+                "sync_library": "Library",
+                "new_downloads_feed": "New Downloads Feed",
+                "collapse": "Collapse",
+                "expand": "Expand",
+                "technical_logs": "Technical Debug Logs",
+                "followers": "Followers",
+                "not_logged_in": "Not logged in",
+                "loading": "Loading...",
+                "logout_confirm": "Are you sure you want to logout from Spotify?",
+                "logout_success": "Logged out from Spotify successfully.",
+                "liked_songs": "Liked Songs",
+                "profile_required": "Profile Required",
+                "authenticating": "Authenticating with Spotify...",
+                "fetching_playlists": "Fetching playlists...",
+                "empty_library": "Your Sync Library is Empty",
+                "library_info": "This is where your tracked playlists live.",
+                "quick_start": "💡 Quick Start:\n1. Go to the 'My Profile' tab\n2. Login with Spotify\n3. Select playlists and add to library",
+                "scanning_disk": "Scanning Disk for Playlists",
+                "checking_sync": "Checking Library Sync Status",
+                "never": "Never",
+                "empty_group": "(Empty Group)",
+                "rendering": "Rendering items...",
+                "refresh_metadata": "Refreshing Metadata",
+                "new_group_prompt": "Enter Group Name:",
+                "rename_group": "Rename Group",
+                "new_name": "New Name:",
+                "last_sync": "Last Sync",
+                "spotify_updated_lbl": "Spotify Updated",
+                "new_songs_available": "New Songs Available",
+                "discovered_on_disk": "Discovered on Disk",
+                "syncing": "Syncing",
+                "spotipy_missing": "Spotipy Library Missing",
+                "remove": "Remove",
+                "remove_confirm": "Remove '{name}' from library?",
+                "sync_complete": "Sync Complete",
+                "download_complete": "Download Complete",
+                "new": "New",
+                "could_not_load_readme": "Could not load FAQ documentation.",
+                "settings_saved": "Settings saved successfully!",
+                "restart_notice": "Language changed. Please restart the application for full effect.",
+                "restore_defaults": "Restore Defaults",
+                "restore_confirm": "Are you sure you want to reset all settings?\nThis will clear API keys, paths, and logout of Spotify.",
+                "reset_done": "Application settings restored to defaults.",
+                "success": "Success",
+                "warning": "Warnings",
+                "info": "Info",
+                "error_lbl": "Error",
+                "confirmation": "Confirmation",
+                "login_title": "Login",
+                "login_different": "Would you like to login with a different account now?",
+                "credentials_required": "Client ID and Secret are required.",
+                "auth_instructions": "1. Your browser will open to login to Spotify.\n2. After login, return here.\n\nNote: Large libraries take time. Please wait for the 'Ready' status.",
+                "partial_sync_notice": "'{name}' is partially synced ({status}).\n\nWould you like to resume and download missing tracks?",
+                "fully_synced_notice": "Selected playlists are already fully synced:\n- {list}",
+                "select_playlist_notice": "Please select at least one playlist to download.",
+                "confirm_download_lbl": "Confirm Download",
+                "batch_complete_lbl": "Batch Complete",
+                "open_output_dir_qn": "Open output directory?",
+                "delete_files_qn": "Delete local files for '{name}' too?\n\nThis will permanently remove the folder:\n{path}",
+                "delete_group_qn": "Delete '{name}'? Playlists will be moved out.",
+                "refresh_complete_msg": "Successfully refreshed {count} library items.",
+                "api_unavailable": "Spotify API is not available.",
+                "invalid_url_msg": "Please provide a valid Spotify Playlist or Album link.",
+                "merge_option_title": "Merge Option",
+                "target_exists_confirm": "Target folder '{name}' already exists in Output Path. Merge contents?",
+                "import_success_msg": "Successfully linked '{name}' to the library.",
+                "import_error_title": "Import Error",
+                "nothing_to_sync_msg": "Nothing to sync.",
+                "batch_sync_complete_title": "Batch Sync Complete",
+                "enter_url_notice": "Please enter a link first.",
+                "download_success": "Downloaded {count} tracks successfully!",
+                "download_error_title": "Download Error",
+                "failed": "Failed",
+                "failed_tag": "[FAILED]",
+                "history_clear_confirm_qn": "Are you sure you want to clear your download history?",
+                "open_download_folder_qn": "Download successful. Would you like to open the folder?",
+                "history_cleared_msg": "History has been wiped.",
+                "tip_download": "Add this link to the download queue",
+                "tip_refresh_lib": "Check Spotify for new tracks in your library",
+                "tip_import_folder": "Import an existing local music folder",
+                "tip_add_profile": "Pick playlists directly from a Spotify profile",
+                "tip_add_url": "Paste a Spotify link to track and download",
+                "tip_new_group": "Create a new folder to organize your playlists",
+                "tip_sync_all": "Download all new content for every playlist in your library",
+                "tip_refresh_hist": "Reload the download history from disk",
+                "tip_clear_hist": "Permanently delete all download records",
+                "tip_browse_cookie": "Select a cookies.txt file to bypass YouTube age-restrictions",
+                "tip_browse_output": "Choose the root folder where all music will be saved",
+                "tip_save_settings": "Save all configuration changes to disk",
+                "tip_restore_defaults": "Reset all settings to their initial factory values",
+                "unknown_user": "Unknown User",
+                "followers_lbl": "Followers: {count}",
+                "create_subfolders": "Create Subfolders",
+                "dl_selected_add": "Download selected and add to the library",
+                "auth_title_dlg": "Spotify Authorization",
+                "auth_needed_msg": "To access private playlists, you need to authorize this app.",
+                "client_id_lbl": "Client ID:",
+                "client_secret_lbl": "Client Secret:",
+                "save_login": "Save & Login",
+                "login_required": "Login Required",
+                "login_failed": "Login failed or cancelled",
+                "no_playlists_found": "No playlists found.",
+                "starting": "Starting...",
+                "preparing_library": "Preparing library...",
+                "open_folder": "Open Folder",
+                "move_to_group": "Move to Group",
+                "choose_dest_group": "Choose destination group:",
+                "hide": "Hide",
+                "developed_by": "Developed with ❤️ for music lovers",
+                "powered_by": "Powered by Antigravity",
+                "select_playlists_to_dl": "Select playlists to download",
+                "synced_tag": "[Synced]",
+                "checking_profile_sync": "Checking Profile Sync Status",
+                "checking_progress": "Checking sync: {current}/{total}..."
+            },
+            "tr": {
+                "library": "Kütüphane",
+                "profile": "Profilim",
+                "downloader": "Hızlı İndir",
+                "history": "Geçmiş",
+                "settings": "Ayarlar",
+                "logs": "Loglar",
+                "about": "Hakkında/SSS",
+                "sync": "Eşitle",
+                "sync_all": "Tümünü Eşitle",
+                "status": "Durum",
+                "tracks": "şarkı",
+                "last_sync": "Son Eşitleme",
+                "spotify_updated": "Spotify Güncellendi",
+                "checking": "Kontrol ediliyor...",
+                "synced": "Senkron",
+                "new_songs": "Yeni Şarkılar Mevcut",
+                "interrupted": "Kesildi",
+                "new": "Yeni",
+                "details": "Detaylar",
+                "save": "Ayarları Kaydet",
+                "language": "Dil",
+                "cookie_file": "Çerez Dosyası",
+                "output_path": "İndirilecek Klasör",
+                "client_id": "Spotify İstemci Kimliği",
+                "client_secret": "Spotify İstemci Şifresi",
+                "user_id": "Varsayılan Spotify Kullanıcı İsmi",
+                "log_level": "Log seviyesi",
+                "refresh_status": "Yenile",
+                "import_folder": "Klasör İçe Aktar",
+                "add_profile": "Profilden Ekle",
+                "add_url": "Manuel link ekle",
+                "new_group": "Yeni Grup",
+                "browse": "Göz At",
+                "download": "İndir",
+                "clear_history": "Geçmişi Temizle",
+                "no_history": "Geçmiş bulunamadı.",
+                "no_tracks_recorded": "Şarkı detayı kaydedilmedi.",
+                "error": "HATA",
+                "aborted": "İptal Edildi",
+                "login": "Spotify ile Giriş Yap",
+                "logout": "Çıkış Yap",
+                "refresh": "Yenile",
+                "search": "Ara",
+                "my_playlists": "Çalma Listelerim",
+                "created_by_me": "Benim Oluşturduklarım",
+                "followed_playlists": "Takip Edilen Listeler",
+                "quick_download": "Hızlı İndir",
+                "url_placeholder": "Spotify Şarkı veya Çalma Listesi Linki Girin",
+                "format": "Dosya türü",
+                "ready": "Hazır",
+                "sync_library": "Kütüphane",
+                "new_downloads_feed": "Yeni İndirme Akışı",
+                "collapse": "Daralt",
+                "expand": "Genişlet",
+                "technical_logs": "Teknik Hata Logları",
+                "followers": "Takipçi",
+                "not_logged_in": "Giriş yapılmadı",
+                "loading": "Yükleniyor...",
+                "logout_confirm": "Spotify oturumunu kapatmak istediğinizden emin misiniz?",
+                "logout_success": "Spotify oturumu başarıyla kapatıldı.",
+                "liked_songs": "Beğenilen Şarkılar",
+                "profile_required": "Profil Gerekli",
+                "authenticating": "Spotify ile kimlik doğrulanıyor...",
+                "fetching_playlists": "Çalma listeleri alınıyor...",
+                "empty_library": "Kütüphaneniz Boş",
+                "library_info": "Takip ettiğiniz çalma listeleri burada görünür.",
+                "quick_start": "💡 Hızlı Başlangıç:\n1. 'Profilim' sekmesine gidin\n2. Spotify ile giriş yapın\n3. Çalma listelerini seçip kütüphaneye ekleyin",
+                "scanning_disk": "Disk Çalma Listeleri İçin Taranıyor",
+                "checking_sync": "Kütüphane Eşitleme Durumu Kontrol Ediliyor",
+                "never": "Hiçbir zaman",
+                "empty_group": "(Boş Grup)",
+                "rendering": "Öğeler oluşturuluyor...",
+                "refresh_metadata": "Metaveriler Yenileniyor",
+                "new_group_prompt": "Grup Adı Girin:",
+                "rename_group": "Grubu Yeniden Adlandır",
+                "new_name": "Yeni Ad:",
+                "last_sync": "Son Eşitleme",
+                "spotify_updated_lbl": "Spotify Güncellendi",
+                "new_songs_available": "Yeni Şarkılar Mevcut",
+                "discovered_on_disk": "Diskte Bulundu",
+                "syncing": "Eşitleniyor",
+                "spotipy_missing": "Spotipy Kütüphanesi Eksik",
+                "remove": "Kaldır",
+                "remove_confirm": "'{name}' kütüphaneden kaldırılsın mı?",
+                "sync_complete": "Eşitleme Tamamlandı",
+                "download_complete": "İndirme Tamamlandı",
+                "new": "Yeni",
+                "could_not_load_readme": "SSS dökümantasyonu yüklenemedi.",
+                "settings_saved": "Ayarlar başarıyla kaydedildi!",
+                "restart_notice": "Dil değişti. Tam etki için lütfen uygulamayı yeniden başlatın.",
+                "restore_defaults": "Varsayılanları Geri Yükle",
+                "restore_confirm": "Tüm ayarları sıfırlamak istediğinizden emin misiniz?\nBu işlem API anahtarlarını, yolları temizleyecek ve Spotify oturumunu kapatacaktır.",
+                "reset_done": "Uygulama ayarları varsayılana döndürüldü.",
+                "success": "Başarılı",
+                "warning": "Uyarılar",
+                "warnings": "Uyarılar",
+                "info": "Bilgi",
+                "error_lbl": "Hata",
+                "confirmation": "Onay",
+                "login_title": "Giriş",
+                "login_different": "Şimdi farklı bir hesapla giriş yapmak ister misiniz?",
+                "credentials_required": "İstemci Kimliği (Client ID) ve Şifre (Secret) gereklidir.",
+                "auth_instructions": "1. Spotify'a giriş yapmak için tarayıcınız açılacak.\n2. Giriş yaptıktan sonra buraya dönün.\n\nNot: Büyük kütüphanelerin yüklenmesi zaman alabilir. Lütfen 'Hazır' durumunu bekleyin.",
+                "partial_sync_notice": "'{name}' kısmen eşitlenmiş ({status}).\n\nDevam edip eksik parçaları indirmek ister misiniz?",
+                "fully_synced_notice": "Seçilen çalma listeleri zaten tamamen eşitlenmiş:\n- {list}",
+                "select_playlist_notice": "Lütfen indirmek için en az bir çalma listesi seçin.",
+                "confirm_download_lbl": "İndirmeyi Onayla",
+                "batch_complete_lbl": "Toplu İşlem Tamamlandı",
+                "open_output_dir_qn": "Kayıt klasörü açılsın mı?",
+                "delete_files_qn": "'{name}' için yerel dosyalar da silinsin mi?\n\nBu işlem şu klasörü kalıcı olarak silecektir:\n{path}",
+                "delete_group_qn": "'{name}' grubunu silmek istediğinizden emin misiniz? İçindeki listeler dışarı taşınacaktır.",
+                "refresh_complete_msg": "{count} kütüphane öğesi başarıyla yenilendi.",
+                "api_unavailable": "Spotify API'sine ulaşılamıyor.",
+                "invalid_url_msg": "Lütfen geçerli bir Spotify Çalma Listesi veya Albüm linki girin.",
+                "merge_option_title": "Birleştirme Seçeneği",
+                "target_exists_confirm": "'{name}' hedef klasörü zaten kayıt yolunda mevcut. İçerikler birleştirilsin mi?",
+                "import_success_msg": "'{name}' başarıyla kütüphaneye bağlandı.",
+                "import_error_title": "İçe Aktarma Hatası",
+                "nothing_to_sync_msg": "Eşitlenecek bir şey yok.",
+                "batch_sync_complete_title": "Toplu Eşitleme Tamamlandı",
+                "enter_url_notice": "Lütfen önce bir link girin.",
+                "download_success": "{count} şarkı başarıyla indirildi!",
+                "download_error_title": "İndirme Hatası",
+                "failed": "Başarısız",
+                "failed_tag": "[BAŞARISIZ]",
+                "history_clear_confirm_qn": "İndirme geçmişini temizlemek istediğinizden emin misiniz?",
+                "open_download_folder_qn": "İndirme başarılı. Klasörü açmak ister misiniz?",
+                "history_cleared_msg": "Geçmiş başarıyla temizlendi.",
+                "tip_download": "Bu linki indirme sırasına ekle",
+                "tip_refresh_lib": "Kütüphanenizdeki yeni şarkılar için Spotify'ı kontrol et",
+                "tip_import_folder": "Mevcut bir yerel müzik klasörünü içe aktar",
+                "tip_add_profile": "Çalma listelerini doğrudan bir Spotify profilinden seç",
+                "tip_add_url": "Takip etmek ve indirmek için bir Spotify linki yapıştır",
+                "tip_new_group": "Çalma listelerinizi düzenlemek için yeni bir grup oluştur",
+                "tip_sync_all": "Kütüphanenizdeki her çalma listesi için tüm yeni içerikleri indir",
+                "tip_refresh_hist": "İndirme geçmişini diskten yeniden yükle",
+                "tip_clear_hist": "Tüm indirme kayıtlarını kalıcı olarak sil",
+                "tip_browse_cookie": "YouTube yaş kısıtlamalarını aşmak için bir cookies.txt dosyası seçin",
+                "tip_browse_output": "Tüm müziklerin kaydedileceği ana klasörü seçin",
+                "tip_save_settings": "Tüm yapılandırma değişikliklerini diske kaydet",
+                "tip_restore_defaults": "Tüm ayarları fabrika ayarlarına döndür",
+                "unknown_user": "Bilinmeyen Kullanıcı",
+                "followers_lbl": "Takipçi: {count}",
+                "create_subfolders": "Alt Klasörler Oluştur",
+                "dl_selected_add": "Seçilenleri indir ve kütüphaneye ekle",
+                "auth_title_dlg": "Spotify Yetkilendirmesi",
+                "auth_needed_msg": "Özel çalma listelerine erişmek için bu uygulamayı yetkilendirmeniz gerekir.",
+                "client_id_lbl": "İstemci Kimliği (Client ID):",
+                "client_secret_lbl": "Şifre (Secret):",
+                "save_login": "Kaydet ve Giriş Yap",
+                "login_required": "Giriş Gerekli",
+                "login_failed": "Giriş başarısız veya iptal edildi",
+                "no_playlists_found": "Hiç çalma listesi bulunamadı.",
+                "starting": "Başlatılıyor...",
+                "preparing_library": "Kütüphane hazırlanıyor...",
+                "open_folder": "Klasörü Aç",
+                "move_to_group": "Gruba Taşı",
+                "choose_dest_group": "Hedef grubu seçin:",
+                "hide": "Gizle",
+                "developed_by": "Müzik severler için ❤️ ile geliştirildi",
+                "powered_by": "Antigravity tarafından desteklenmektedir",
+                "select_playlists_to_dl": "İndirmek için çalma listeleri seçin",
+                "synced_tag": "[Senkron]",
+                "checking_profile_sync": "Profil Eşitleme Durumu Kontrol Ediliyor",
+                "checking_progress": "Eşitleme kontrolü: {current}/{total}..."
+            }
+        }
+
+    def set_language(self, lang_code):
+        if lang_code in self.translations:
+            self.lang = lang_code
+            self.logger.info(f"Language set to: {lang_code}")
+        else:
+            self.logger.warning(f"Language code '{lang_code}' not supported, falling back to English.")
+            self.lang = "en"
+
+    def t(self, key, default=None, **kwargs):
+        """Translates a key based on current language."""
+        text = self.translations.get(self.lang, {}).get(key, default or key)
+        if kwargs:
+            try:
+                return text.format(**kwargs)
+            except (KeyError, ValueError):
+                pass
+        return text
+
+    def translate_error(self, error_str):
+        """Translates common technical errors into human-readable localized strings."""
+        if not error_str: return ""
+        
+        if self.lang == "tr":
+            # Rate Limit Logic
+            if "Extreme Rate Limit" in error_str or "429" in error_str:
+                import re
+                # Pattern: Spotdl will wait for 01:23:45
+                match = re.search(r"wait for (\d{2}):(\d{2}):(\d{2})", error_str)
+                if match:
+                    h, m, s = match.groups()
+                    h, m, s = int(h), int(m), int(s)
+                    duration_parts = []
+                    if h > 0: duration_parts.append(f"{h} saat")
+                    if m > 0: duration_parts.append(f"{m} dakika")
+                    if s > 0: duration_parts.append(f"{s} saniye")
+                    
+                    duration_str = " ve ".join(duration_parts)
+                    return f"Aşırı Hız Sınırı (429). Spotify çok fazla istek aldığınızı söylüyor. Lütfen {duration_str} kadar bekleyin, uygulama otomatik olarak devam edecektir."
+                
+                return "Spotify Hız Sınırı (429). Çok fazla istek gönderildi, uygulama bir süre bekleyecek."
+
+            if "No tracks found" in error_str:
+                return "Şarkı bulunamadı. Lütfen URL'yi kontrol edin."
+            
+            if "Spotify API Error" in error_str:
+                return "Spotify API Hatası. Lütfen internet bağlantınızı veya API anahtarlarınızı kontrol edin."
+
+        return error_str

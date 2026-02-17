@@ -96,3 +96,28 @@ class SpotifyService:
                 else:
                     raise e
         return None
+    def get_playlist_tracks_with_dates(self, playlist_id):
+        """Fetches list of (track_name, added_at_iso_string) for a playlist."""
+        if not self.sp:
+            return []
+
+        tracks = []
+        try:
+            results = self.safe_call(self.sp.playlist_items, playlist_id, fields="items(added_at,track(name,artists(name))),next")
+            while results:
+                for item in results['items']:
+                    if item.get('track'):
+                        name = item['track']['name']
+                        artists = ", ".join([a['name'] for a in item['track']['artists']])
+                        full_name = f"{artists} - {name}"
+                        added_at = item.get('added_at')
+                        tracks.append((full_name, added_at))
+                
+                if results.get('next'):
+                    results = self.safe_call(self.sp.next, results)
+                else:
+                    results = None
+        except Exception as e:
+            self.logger.error(f"Error fetching tracks with dates: {e}")
+            
+        return tracks
