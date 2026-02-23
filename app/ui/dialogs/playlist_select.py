@@ -91,7 +91,8 @@ class PlaylistSelectionDialog(ctk.CTkToplevel):
                 
                 self.after(0, lambda: self.populate_list(playlists))
             except Exception as e:
-                self.after(0, lambda: messagebox.showerror("Error", f"Failed to fetch playlists: {e}"))
+                err_str = str(e)
+                self.after(0, lambda: messagebox.showerror("Error", f"Failed to fetch playlists: {err_str}"))
             finally:
                 self.after(0, lambda: self.btn_fetch.configure(state="normal", text="Fetch Public Playlists"))
 

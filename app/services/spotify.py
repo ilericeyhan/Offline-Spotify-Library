@@ -1,5 +1,5 @@
 import time
-from app.core.constants import SPOTIPY_AVAILABLE
+from app.core.constants import SPOTIPY_AVAILABLE, SPOTIFY_CACHE_FILE
 from app.core.config import ConfigManager
 from app.services.logger import LogService
 
@@ -23,36 +23,53 @@ class SpotifyService:
         if self.status_callback:
             self.status_callback(message)
 
+    def get_auth_manager(self):
+        """Returns the auth manager if client id/secret are set."""
+        client_id = self.config.get("spotify_client_id")
+        client_secret = self.config.get("spotify_client_secret")
+        if not client_id or not client_secret:
+            return None
+        
+        return SpotifyOAuth(
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri="http://127.0.0.1:8888/callback",
+            scope="user-library-read playlist-read-private playlist-read-collaborative",
+            open_browser=False,
+            cache_path=SPOTIFY_CACHE_FILE
+        )
+
+    def has_cached_token(self):
+        """Checks if a valid cached token exists without prompting."""
+        auth_manager = self.get_auth_manager()
+        if not auth_manager: return False
+        try:
+            token = auth_manager.get_cached_token()
+            return token is not None
+        except:
+            return False
+
     def initialize_client(self):
         """Initializes the Spotify client using config credentials."""
         if not SPOTIPY_AVAILABLE:
             self.logger.error("Spotipy not installed.")
             return False
 
-        client_id = self.config.get("spotify_client_id")
-        client_secret = self.config.get("spotify_client_secret")
-
-        if not client_id or not client_secret:
+        auth_manager = self.get_auth_manager()
+        if not auth_manager:
             return False
 
         try:
-            # Simple credentials flow for public data
-            # For user library, we might need OAuth (handled elsewhere or here?)
-            # The original app used SpotifyOAuth for user library.
+            self.logger.info(f"Initializing SpotifyOAuth with cache: {SPOTIFY_CACHE_FILE}")
             
-            # Replicating original logic: 
-            # It seems main.py used SpotifyOAuth for almost everything if user logged in.
-            
-            self.sp = spotipy.Spotify(
-                auth_manager=SpotifyOAuth(
-                    client_id=client_id,
-                    client_secret=client_secret,
-                    redirect_uri="http://127.0.0.1:8888/callback",
-                    scope="user-library-read playlist-read-private playlist-read-collaborative",
-                    open_browser=True,
-                    cache_path=".cache"
-                )
-            )
+            # Diagnostic: check if we have a token
+            token_info = auth_manager.get_cached_token()
+            if token_info:
+                self.logger.info(f"Successfully loaded cached Spotify token.")
+            else:
+                self.logger.warning(f"No cached Spotify token found.")
+
+            self.sp = spotipy.Spotify(auth_manager=auth_manager)
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize Spotify: {e}")

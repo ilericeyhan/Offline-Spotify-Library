@@ -73,7 +73,7 @@ from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 import re
 
-from app.core.constants import APP_NAME, APP_VERSION, SPOTIPY_AVAILABLE, REDIRECT_URI, SCOPES, LOG_FILE
+from app.core.constants import APP_NAME, APP_VERSION, SPOTIPY_AVAILABLE, REDIRECT_URI, SCOPES, LOG_FILE, SPOTIFY_CACHE_FILE
 from app.core.config import ConfigManager
 from app.core.history import HistoryManager
 from app.services.logger import LogService
@@ -111,6 +111,9 @@ class SpotDLApp(ctk.CTk):
                 self.wm_iconphoto(False, self.icon_photo)
         except Exception as e:
             print(f"Failed to load icon: {e}")
+        
+        # Runtime UI mapping for smooth reordering without breaking config JSON
+        self._item_widgets = {} # {id(item): widget_reference}
         
         # Initialize Managers & Services
         self.config_manager = ConfigManager()
@@ -174,19 +177,13 @@ class SpotDLApp(ctk.CTk):
         self.after(800, self._startup_tasks)
 
     def _startup_tasks(self):
-        """Runs initial background scans once the UI is ready."""
-        self.lbl_lib_refresh_status.pack(side="left", padx=20)
+        """Hidden background refreshes after boot."""
         self._recover_interrupted_syncs()
         self.update_profile_display()
         
-        # Only trigger full library refresh if logged in
-        has_creds = self.config_manager.get("spotify_client_id") and self.config_manager.get("spotify_client_secret")
-        if has_creds:
-            self.refresh_library_ui(remote_sync=True)
-        else:
-            # Still show local library but skip remote status checks
-            self.refresh_library_ui(remote_sync=False)
-            self.log_message("Offline: Spotify not connected. Remote sync skipped.")
+        # We already rendered local results in setup_library_tab.
+        # Minimal logging to confirm boot is clean.
+        self.log_message(f"App initialized. Version {APP_VERSION}")
 
     def log_message(self, message):
         """Logs a message to the Logs tab text area."""
@@ -279,7 +276,7 @@ class SpotDLApp(ctk.CTk):
         self.all_fetched_playlists = [] # Store all for filtering
 
     def update_profile_display(self):
-        """Fetches and displays the user profile if keys and user ID are present."""
+        """Fetches and displays the user profile based on current state."""
         if not SPOTIPY_AVAILABLE:
             self.lbl_profile_name.configure(text=self.i18n.t("spotipy_missing"))
             return
@@ -287,35 +284,52 @@ class SpotDLApp(ctk.CTk):
         client_id = self.config_manager.get("spotify_client_id")
         client_secret = self.config_manager.get("spotify_client_secret")
         
-        # Check if we have credentials
+        # Reset visibility
+        self.btn_link_profile.pack_forget()
+        self.btn_refresh_profile.pack_forget()
+        self.btn_logout_profile.pack_forget()
+        
         if not (client_id and client_secret):
             self.lbl_profile_name.configure(text=self.i18n.t("not_logged_in"))
+            self.lbl_profile_status.configure(text="Enter API Keys in Settings tab", text_color="gray")
+            self.btn_link_profile.configure(text=self.i18n.t("login_title"))
             self.btn_link_profile.pack(side="left")
-            self.btn_refresh_profile.pack_forget()
-            self.btn_logout_profile.pack_forget()
             return
-        else:
-            self.btn_link_profile.pack_forget()
-            self.btn_refresh_profile.pack(side="left", padx=5)
-            self.btn_logout_profile.pack(side="left", padx=5)
 
-        self.lbl_profile_name.configure(text=self.i18n.t("loading"))
+        # Always check cached token status to show correct buttons
+        has_token = self.spotify_service.has_cached_token()
         
-        # Run in thread
+        if not has_token:
+            self.lbl_profile_name.configure(text="Authorize Spotify")
+            self.lbl_profile_status.configure(text="Credentials Saved. Click 'Login' to authorize.", text_color="orange")
+            self.btn_link_profile.configure(text=self.i18n.t("login"))
+            self.btn_link_profile.pack(side="left")
+            self.btn_logout_profile.configure(text="Unlink Keys", fg_color="red")
+            self.btn_logout_profile.pack(side="left", padx=5)
+            return
+
+        # We have token - show refresh and standard logout
+        self.lbl_profile_name.configure(text=self.i18n.t("loading"))
+        self.btn_refresh_profile.pack(side="left", padx=5)
+        self.btn_logout_profile.configure(text=self.i18n.t("logout"), fg_color="red")
+        self.btn_logout_profile.pack(side="left", padx=5)
+        
+        # Run fetch in thread
         threading.Thread(target=self._fetch_profile_thread, args=(client_id, client_secret), daemon=True).start()
 
     def logout_spotify(self):
         """Clears Spotify credentials and session data."""
         if messagebox.askyesno(self.i18n.t("logout"), self.i18n.t("logout_confirm")):
-            self.config_manager.set("spotify_client_id", "")
-            self.config_manager.set("spotify_client_secret", "")
+            self.config_manager.set("spotify_client_id", "", bypass_safety=True, force_logout=True)
+            self.config_manager.set("spotify_client_secret", "", bypass_safety=True, force_logout=True)
+            self.spotify_service.sp = None # Explicitly clear client state
             
-            # Remove spotipy cache files
+            # Sync UI
+            self.entry_client_id.delete(0, "end")
+            self.entry_secret.delete(0, "end")
             try:
-                folder = os.getcwd()
-                for f in os.listdir(folder):
-                    if f.startswith(".cache"):
-                         os.remove(os.path.join(folder, f))
+                if os.path.exists(SPOTIFY_CACHE_FILE):
+                    os.remove(SPOTIFY_CACHE_FILE)
             except Exception as e:
                 self.log_message(f"Error clearing Spotify cache: {e}")
 
@@ -336,85 +350,102 @@ class SpotDLApp(ctk.CTk):
                 self.link_profile_dialog()
 
     def link_profile_dialog(self):
-        """Opens a dialog to catch API details, with smart credential detection."""
-        saved_cid = self.config_manager.get("spotify_client_id")
-        saved_secret = self.config_manager.get("spotify_client_secret")
+        """Simplest login flow: use Settings keys and open browser."""
+        # Diagnostic: check both get() and raw dict
+        cid_get = self.config_manager.get("spotify_client_id")
+        secret_get = self.config_manager.get("spotify_client_secret")
+        cid_raw = self.config_manager.config.get("spotify_client_id")
+        secret_raw = self.config_manager.config.get("spotify_client_secret")
         
-        if saved_cid and saved_secret:
-            choice = messagebox.askyesnocancel(self.i18n.t("login_title"), 
-                "Found saved Spotify API credentials in your settings.\n\n"
-                "Would you like to use these existing credentials to login?\n\n"
-                "Yes = Use Saved\nNo = Enter Manually\nCancel = Abort Login"
-            )
-            if choice is None: return # Abort
-            if choice is True: # Use Saved
-                # Skip dialog and go straight to profile update
+        diag_msg = f"Login Triggered. CID: {'SET' if cid_get else 'EMPTY'} (Raw: {'SET' if cid_raw else 'EMPTY'})"
+        self.log_message(diag_msg)
+        print(f"DEBUG: {diag_msg}")
+        
+        cid = cid_get
+        secret = secret_get
+        
+        if not (cid and secret):
+            missing_parts = []
+            if not cid: missing_parts.append("Client ID")
+            if not secret: missing_parts.append("Client Secret")
+            
+            error_msg = f"Spotify API {' and '.join(missing_parts)} missing from config.\n\nPlease check 'Settings' tab and click 'Save Settings' first."
+            messagebox.showwarning(self.i18n.t("login_title"), error_msg)
+            self.tabview.set(self.i18n.t("settings"))
+            return
+
+        if self.spotify_service.has_cached_token():
+            if messagebox.askyesno(self.i18n.t("login_title"), self.i18n.t("login_different")):
+                 # Forces a re-auth by opening browser
+                 pass
+            else:
                 self.update_profile_display()
                 return
 
-        # Manual Entry Dialog
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Login to Spotify")
-        dialog.geometry("500x420")
-        dialog.attributes("-topmost", True)
-        
-        ctk.CTkLabel(dialog, text=self.i18n.t("auth_title_dlg"), font=("Arial", 16, "bold")).pack(pady=10)
-        ctk.CTkLabel(dialog, text=self.i18n.t("auth_needed_msg")).pack(pady=(0, 5))
-        ctk.CTkLabel(dialog, text=f"Redirect URI: {REDIRECT_URI}", text_color="gray", font=("Arial", 10)).pack()
-        
-        ctk.CTkLabel(dialog, text=self.i18n.t("client_id_lbl")).pack(anchor="w", padx=20, pady=(10,0))
-        entry_cid = ctk.CTkEntry(dialog)
-        entry_cid.insert(0, saved_cid or "")
-        entry_cid.pack(fill="x", padx=20, pady=5)
-        
-        ctk.CTkLabel(dialog, text=self.i18n.t("client_secret_lbl")).pack(anchor="w", padx=20, pady=(10,0))
-        entry_secret = ctk.CTkEntry(dialog, show="*")
-        entry_secret.insert(0, saved_secret or "")
-        entry_secret.pack(fill="x", padx=20, pady=5)
-        
-        def start_auth():
-            cid = entry_cid.get().strip()
-            secret = entry_secret.get().strip()
-            if not cid or not secret:
-                messagebox.showerror(self.i18n.t("error_lbl"), self.i18n.t("credentials_required"))
-                return
+        try:
+            sp_oauth = SpotifyOAuth(
+                client_id=cid, 
+                client_secret=secret, 
+                redirect_uri=REDIRECT_URI, 
+                scope=SCOPES, 
+                open_browser=True,
+                cache_path=SPOTIFY_CACHE_FILE
+            )
+            
+            # Show the message BEFORE blocking on the local server
+            messagebox.showinfo(self.i18n.t("login_title"), self.i18n.t("login_browser_opened"))
+            self.lbl_profile_status.configure(text=self.i18n.t("authenticating"), text_color="orange")
+            self.lbl_profile_name.configure(text="Waiting for Browser...")
 
-            self.config_manager.set("spotify_client_id", cid)
-            self.config_manager.set("spotify_client_secret", secret)
-            
-            # Close dialog FIRST to avoid Z-order overlay issues with the messagebox
-            dialog.destroy()
-            
-            messagebox.showinfo(self.i18n.t("login_title"), self.i18n.t("auth_instructions"))
-            
-            try:
-                # Trigger auth flow and explicitly open browser
-                sp_oauth = SpotifyOAuth(client_id=cid, client_secret=secret, redirect_uri=REDIRECT_URI, scope=SCOPES)
-                auth_url = sp_oauth.get_authorize_url()
-                webbrowser.open(auth_url)
-            except Exception as e:
-                self.log_message(f"Error opening browser: {e}")
+            def _auth_worker():
+                try:
+                    # This will start the local HTTP server on 127.0.0.1:8888 and wait for the redirect
+                    token_info = sp_oauth.get_access_token(as_dict=False)
+                    if token_info:
+                        self.log_message("Spotify authentication completed successfully via local server.")
+                        self.after(0, self.update_profile_display)
+                    else:
+                        self.log_message("Failed to retrieve token from local server.")
+                        self.after(0, lambda: self.lbl_profile_status.configure(text=self.i18n.t("login_failed"), text_color="red"))
+                except Exception as e:
+                    self.log_message(f"Authentication worker error: {e}")
+                    self.after(0, lambda: self.lbl_profile_status.configure(text=f"Auth Error: {e}", text_color="red"))
 
-            self.after(500, self.update_profile_display)
+            # Run the server in a daemon thread so it doesn't freeze the GUI
+            threading.Thread(target=_auth_worker, daemon=True).start()
             
-        ctk.CTkButton(dialog, text=self.i18n.t("save_login"), command=start_auth, fg_color="green", hover_color="darkgreen").pack(pady=20)
+        except Exception as e:
+            messagebox.showerror(self.i18n.t("error_lbl"), f"{self.i18n.t('failed')}: {e}")
 
     def _fetch_profile_thread(self, cid, secret):
         self.set_active_task(self.i18n.t("login"))
         self.after(0, lambda: self.lbl_profile_status.configure(text=self.i18n.t("authenticating"), text_color="orange"))
+        # Try to initialize or use existing sp
         try:
-            # Try OAuth first
-            auth_manager = SpotifyOAuth(client_id=cid, client_secret=secret, redirect_uri=REDIRECT_URI, scope=SCOPES)
-            sp = spotipy.Spotify(auth_manager=auth_manager)
+            # First, check if we have a valid token without prompting
+            if not self.spotify_service.has_cached_token():
+                self.log_message("Manual authentication required. Please use the 'Login' button.")
+                self.after(0, lambda: self.lbl_profile_name.configure(text=self.i18n.t("login_required")))
+                self.after(0, lambda: self.lbl_profile_status.configure(text=self.i18n.t("auth_instructions") or "Click Login to authorize", text_color="orange"))
+                return
+
+            # Re-initialize to ensure we use latest keys
+            if not self.spotify_service.sp:
+                self.spotify_service.initialize_client()
             
+            sp = self.spotify_service.sp
+            if not sp:
+                raise Exception("Service unavailable")
+
             # Fetch Current User (Authenticated)
             try:
                 self.log_message("Requesting Spotify profile information...")
+                # We know a token exists, so this should be safe and non-blocking
                 user = self.spotify_service.safe_call(sp.current_user)
                 if not user:
                     raise Exception("Failed to retrieve user profile.")
             except Exception as e:
-                # Fallback to generic user if token fails or not authorized yet
+                # If it still fails, it might be an expired token that needs refresh
                 self.log_message(f"Spotify profile fetch failed: {e}")
                 self.after(0, lambda: self.lbl_profile_name.configure(text=self.i18n.t("login_required")))
                 self.after(0, lambda: self.lbl_profile_status.configure(text=self.i18n.t("login_failed"), text_color="red"))
@@ -557,16 +588,31 @@ class SpotDLApp(ctk.CTk):
         self.lbl_profile_followers.configure(text=f"{followers:,} {self.i18n.t('followers')}")
         
         # Safe Image Config (Must happen in Main Thread)
-        try:
-            if image_payload:
-                # Create CTkImage from PIL payload in the main thread
-                ctk_img = ctk.CTkImage(light_image=image_payload, dark_image=image_payload, size=(100, 100))
-                self.lbl_profile_pic.configure(image=ctk_img, text="")
-            else:
-                self.lbl_profile_pic.configure(image=None, text="[No Image]")
-        except Exception as e:
-            self.log_message(f"Error updating profile image: {e}")
-            self.lbl_profile_pic.configure(image=None, text="[Error]")
+        def set_image():
+            try:
+                if image_payload:
+                    # Create CTkImage from PIL payload in the main thread
+                    # Ensure PIL image is fully loaded
+                    image_payload.load()
+                    ctk_img = ctk.CTkImage(light_image=image_payload, dark_image=image_payload, size=(100, 100))
+                    # Store reference as instance variable to prevent garbage collection
+                    self.profile_image_ref = ctk_img 
+                    self.lbl_profile_pic.configure(image=ctk_img, text="")
+                else:
+                    self.profile_image_ref = None
+                    self.lbl_profile_pic.configure(image=None, text="[No Image]")
+            except Exception as e:
+                self.log_message(f"Error updating profile image: {e}")
+                # If widget is in bad state (pyimage error), re-configure with image=None
+                # But sometimes even this fails if the widget is "cursed"
+                try:
+                    # Direct Tcl level clear to avoid pyimage check if possible
+                    self.lbl_profile_pic._label.configure(image="")
+                    self.lbl_profile_pic.configure(image=None, text="[Error]")
+                except:
+                    pass
+        
+        set_image()
 
     def refresh_profile_lists(self):
         """Re-sorts cached playlists based on latest activity and refreshes UI."""
@@ -1127,7 +1173,7 @@ class SpotDLApp(ctk.CTk):
         ctk.CTkLabel(frm_header, text=self.i18n.t("sync_library"), font=("Arial", 18, "bold")).pack(side="left")
         
         # Refresh Indicator (hidden by default)
-        self.lbl_lib_refresh_status = ctk.CTkLabel(frm_header, text="🔄 " + self.i18n.t("checking"), font=("Arial", 11, "italic"), text_color="orange")
+        self.lbl_lib_refresh_status = ctk.CTkLabel(frm_header, text="", font=("Arial", 11, "italic"), text_color="orange")
         # Start hidden
         
         btn_refresh = ctk.CTkButton(frm_header, text=self.i18n.t("refresh_status"), command=self.refresh_library_metadata, fg_color="gray")
@@ -1154,6 +1200,11 @@ class SpotDLApp(ctk.CTk):
         self.library_frame = ctk.CTkScrollableFrame(self.tab_library)
         self.library_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
         
+        # Initial Render (Sync) if library exists to avoid boot flicker
+        library = self.config_manager.get("library") or []
+        if library:
+            self._render_library_results(library, remote_sync=False)
+        
         # Sync Button
         self.btn_sync = ctk.CTkButton(self.tab_library, text=self.i18n.t("sync_all"), command=self.sync_all, fg_color="green", hover_color="darkgreen")
         self.btn_sync.grid(row=2, column=0, pady=10)
@@ -1164,6 +1215,9 @@ class SpotDLApp(ctk.CTk):
         # 1. Clear UI on main thread
         for widget in self.library_frame.winfo_children():
             widget.destroy()
+        
+        # Clear runtime mapping to prevent memory leaks or stale refs
+        self._item_widgets.clear()
 
         self.lbl_lib_refresh_status.configure(text="🔄 " + self.i18n.t("preparing_library"))
         if not self.lbl_lib_refresh_status.winfo_ismapped():
@@ -1212,6 +1266,12 @@ class SpotDLApp(ctk.CTk):
     def _render_library_results(self, library, remote_sync):
         """Renders the library items on the main thread."""
         if not self.library_frame.winfo_exists(): return
+        
+        # Cancel any ongoing render loop to prevent UI duplication
+        if hasattr(self, '_stagger_job_id') and self._stagger_job_id:
+            try: self.after_cancel(self._stagger_job_id)
+            except: pass
+            self._stagger_job_id = None
 
         if not library:
             notice_frame = ctk.CTkFrame(self.library_frame, fg_color="transparent")
@@ -1285,7 +1345,10 @@ class SpotDLApp(ctk.CTk):
                         raise StopIteration
                 
                 # Breath the main thread after each batch
-                self.after(1, lambda: render_staggered(iterator, current_level, p, source_list))
+                if current_level == 0:
+                    self._stagger_job_id = self.after(1, lambda: render_staggered(iterator, current_level, p, source_list))
+                else:
+                    self.after(1, lambda: render_staggered(iterator, current_level, p, source_list))
             except StopIteration:
                 if current_level == 0:
                     try:
@@ -1293,26 +1356,54 @@ class SpotDLApp(ctk.CTk):
                             self.loading_lbl.destroy()
                     except: pass
                     
-                    if self._lib_status_queue and remote_sync:
+                    if self._lib_status_queue:
                         # Small delay to ensure any nested/remaining staggered items have a chance to enter the queue
                         self.after(500, lambda: threading.Thread(target=self._async_lib_status_worker, daemon=True).start())
                     else:
-                        # Clear the scanning indicator if skipping
+                        # Clear the scanning indicator if no items
                         self.after(0, lambda: self.lbl_lib_refresh_status.configure(text=""))
                         self.set_active_task(None)
 
         it = enumerate(items)
+        
+        # Performance optimization: Render first batch synchronously to avoid flickering
+        try:
+            for _ in range(5):
+                idx, item = next(it)
+                self._render_single_item(parent, item, level, idx, items)
+        except StopIteration:
+            # If less than 5 items, we're done
+            if level == 0:
+                try:
+                    if hasattr(self, 'loading_lbl') and self.loading_lbl.winfo_exists():
+                        self.loading_lbl.destroy()
+                except: pass
+                
+                if self._lib_status_queue:
+                    self.after(500, lambda: threading.Thread(target=self._async_lib_status_worker, daemon=True).start())
+                else:
+                    self.after(0, lambda: self.lbl_lib_refresh_status.configure(text=""))
+                    self.set_active_task(None)
+            return
+
+        # Render the rest staggered
         render_staggered(it, level, parent, items)
 
     def _render_single_item(self, parent, item, level, index, source_list):
         """Renders a single playlist or group item with all bells and whistles."""
+        # Wrap the whole item in a container for easy reordering (SMOOTH DND FIX)
+        item_container = ctk.CTkFrame(parent, fg_color="transparent")
+        item_container.pack(fill="x", pady=2)
+        
+        # Store widget reference in runtime mapping (NOT in the item dict itself)
+        self._item_widgets[id(item)] = item_container
+
         item_type = item.get("type", "playlist")
         if item_type == "group":
             # 1. Header Frame
-            group_header = ctk.CTkFrame(parent, fg_color="#2b2b2b" if level == 0 else "transparent")
-            # Increase indentation step to 50 for clear hierarchy
+            group_header = ctk.CTkFrame(item_container, fg_color="#2b2b2b" if level == 0 else "transparent")
             indent_px = level * 50 + 5
-            group_header.pack(fill="x", padx=(indent_px, 5), pady=2)
+            group_header.pack(fill="x", padx=(indent_px, 5))
             
             # Aligned Toggle Area
             toggle_container = ctk.CTkFrame(group_header, width=30, height=26, fg_color="transparent")
@@ -1333,7 +1424,7 @@ class SpotDLApp(ctk.CTk):
                           hover_color="#3a3a3a", command=lambda it=item: self._rename_group(it)).pack(side="right", padx=5)
 
             # 2. Children Container (Reserved Space)
-            children_container = ctk.CTkFrame(parent, fg_color="transparent", height=0)
+            children_container = ctk.CTkFrame(item_container, fg_color="transparent", height=0)
             children_container.pack(fill="x")
 
             if item.get("expanded", True):
@@ -1344,9 +1435,9 @@ class SpotDLApp(ctk.CTk):
                     self._render_library_items(children_container, child_items, level + 1)
         else:
             # Render Playlist Card
-            card = ctk.CTkFrame(parent)
+            card = ctk.CTkFrame(item_container)
             indent_px = level * 50 + 5
-            card.pack(fill="x", padx=(indent_px, 5), pady=2)
+            card.pack(fill="x", padx=(indent_px, 5))
 
             # Visual Guide for Nested Items
             # Visual Guide for Nested Items (Simplified)
@@ -1413,7 +1504,7 @@ class SpotDLApp(ctk.CTk):
 
             # 2. Consolidated Status Badge (Left of Buttons)
 
-            status_badge = ctk.CTkLabel(right_side, text="⚪", font=("Arial", 18, "bold"), text_color="gray")
+            status_badge = ctk.CTkLabel(right_side, text="⏳", font=("Arial", 18, "bold"), text_color="orange")
             status_badge.pack(side="right", padx=10)
             
             # Initial Metadata for Tooltip
@@ -1544,10 +1635,7 @@ class SpotDLApp(ctk.CTk):
                         # PRIORITY 1: Spotify Updates (User added songs)
                         is_update_available = False
                         try:
-                            # Use a very old date if None
-                            compare_time = sync_time or "2000-01-01T00:00:00Z"
-                            
-                            if s_iso:
+                            if sync_time and s_iso:
                                 from datetime import timezone
                                 def _to_dt(iso):
                                     if not iso: return datetime(2000, 1, 1, tzinfo=timezone.utc)
@@ -1557,7 +1645,7 @@ class SpotDLApp(ctk.CTk):
                                         dt = dt.astimezone(timezone.utc)
                                     return dt
                                 
-                                if _to_dt(s_iso) > _to_dt(compare_time):
+                                if _to_dt(s_iso) > _to_dt(sync_time):
                                     is_update_available = True
                         except: pass
 
@@ -1617,21 +1705,25 @@ class SpotDLApp(ctk.CTk):
 
             discovered_disk_count = 0
             
-            # Recursive Discovery (Depth 2)
-            existing_folders = []
+            # Recursive Discovery (os.walk for reliability)
+            existing_folders = {} # Mapping: name.lower -> full_path
             try:
-                # Level 1: Immediate subfolders
-                for d in os.listdir(output_base):
-                    full_d = os.path.join(output_base, d)
-                    if os.path.isdir(full_d):
-                        existing_folders.append(d) # Add "FolderName"
+                # Walk down up to a certain depth (e.g. 5)
+                # output_base is root
+                for root, dirs, files in os.walk(output_base):
+                    # Calculate depth relative to output_base
+                    rel_path = os.path.relpath(root, output_base)
+                    depth = 0 if rel_path == "." else len(rel_path.split(os.sep))
+                    
+                    if depth > 4: # Allow 4 levels of nesting
+                        continue
                         
-                        # Level 2: Nested folders (e.g. Music/Genre/Playlist)
-                        for sub in os.listdir(full_d):
-                            full_sub = os.path.join(full_d, sub)
-                            if os.path.isdir(full_sub):
-                                # We add the leaf folder name for matching against playlist names
-                                existing_folders.append(sub) 
+                    for d in dirs:
+                        full_d_path = os.path.join(root, d)
+                        # Store the first one we find (best effort)
+                        d_low = d.lower()
+                        if d_low not in existing_folders:
+                             existing_folders[d_low] = full_d_path
             except Exception as e:
                 self.log_message(f"Discovery Scan Error: {e}")
 
@@ -1644,10 +1736,17 @@ class SpotDLApp(ctk.CTk):
                 if not url or url in library_urls or url in ignored_urls:
                     continue
                 
-                safe_name = get_safe_dirname(pl['name'])
+                safe_name = get_safe_dirname(pl['name']).lower()
                 if safe_name in existing_folders:
-                    self.log_message(f"Discovery: Found {pl['name']} on disk at {safe_name}")
-                    library.append({"url": url, "name": pl['name'], "total_tracks": pl['tracks']['total'], "type": "playlist"})
+                    lp = existing_folders[safe_name]
+                    self.log_message(f"Discovery: Found {pl['name']} on disk at {lp}")
+                    library.append({
+                        "url": url, 
+                        "name": pl['name'], 
+                        "total_tracks": pl['tracks']['total'], 
+                        "local_path": lp,  # PERSIST THE PATH
+                        "type": "playlist"
+                    })
                     library_urls.add(url)
                     discovered_disk_count += 1
                     
@@ -2038,12 +2137,23 @@ class SpotDLApp(ctk.CTk):
                 self.drag_item_index = new_index
                 self.drag_start_y = event.y_root
                 
-                # Save and Refresh
-                self.config_manager.set("library", self.config_manager.get("library"))
-                self.refresh_library_ui()
+                # Local Swap only during motion for smoothness (NO DISK SAVE)
+                self._reorder_item_widgets(self.drag_item_list)
+
+    def _reorder_item_widgets(self, item_list):
+        """Lightweight UI update for reordering without destroying widgets."""
+        for item in item_list:
+            widget = self._item_widgets.get(id(item))
+            if widget and widget.winfo_exists():
+                widget.pack_forget()
+                widget.pack(fill="x", pady=2)
 
     def _on_drag_stop(self, event):
-        """Cleans up after drag-and-drop."""
+        """Cleans up after drag-and-drop and persists changes."""
+        # Save to disk ONLY when dropped to avoid lag during move
+        if hasattr(self, 'drag_item_list'):
+            self.config_manager.set("library", self.config_manager.get("library"))
+
         self.drag_item_index = -1
         if hasattr(self, 'drag_item_list'): del self.drag_item_list
         self.unbind("<B1-Motion>")
@@ -2275,9 +2385,11 @@ class SpotDLApp(ctk.CTk):
         self._set_item_progress_flag(url, False)
         
         # Update sync_interrupted flag 
+        # A sync is only truly "Interrupted" if it crashed (e.g., extreme rate limit, SpotDL exception)
+        # Normal provider lookup failures are expected and shouldn't permanently flag the playlist with a warning.
         has_new_failures, new_failures = self._evaluate_sync_failures(failed_tracks, new_track_names, is_first_sync)
-        is_interrupted = crashed or has_new_failures
-        is_effectively_clean = (success or not has_new_failures) and not crashed
+        is_interrupted = crashed
+        is_effectively_clean = not is_interrupted
         
         self._set_item_interrupted_flag(url, is_interrupted)
         
@@ -2285,8 +2397,8 @@ class SpotDLApp(ctk.CTk):
         self.history_manager.set_last_entry_interrupted(is_interrupted, error=error_msg)
         
         # Final UI update
-        # Only update last_synced if it was actually a clean sync
-        self._update_item_timestamps(url, downloaded=(len(tracks) > 0), checked=True, synced=is_effectively_clean)
+        # Always update last_synced if the sync completed (even with warnings), to prevent infinite first-sync loops
+        self._update_item_timestamps(url, downloaded=(len(tracks) > 0), checked=True, synced=not crashed)
         
         self.set_active_task(None)
         self.after(0, self.refresh_library_ui)
@@ -2386,15 +2498,15 @@ class SpotDLApp(ctk.CTk):
             self._set_item_progress_flag(item['url'], False)
             
             has_new_failures, _ = self._evaluate_sync_failures(failed_tracks, new_track_names, is_first_sync)
-            is_interrupted = crashed or has_new_failures
+            is_interrupted = crashed
             self._set_item_interrupted_flag(item['url'], is_interrupted)
             
             # Phase 111: Sync History with Smart Logic
             self.history_manager.set_last_entry_interrupted(is_interrupted, error=error_msg)
             
-            if success or len(tracks) > 0:
+            if success or len(tracks) > 0 or not crashed:
                 all_new_tracks.extend(tracks)
-                # Update timestamps; only set synced to True if it wasn't interrupted
+                # Always update last_synced if the sync completed (even with normal lookup warnings)
                 self._update_item_timestamps(item['url'], downloaded=(len(tracks) > 0), checked=True, synced=not is_interrupted)
                 for track in tracks:
                     self.log_download(track)
@@ -2620,8 +2732,10 @@ class SpotDLApp(ctk.CTk):
         # API Keys
         ctk.CTkLabel(self.tab_settings, text=self.i18n.t("client_id") + ":").grid(row=2, column=0, padx=10, pady=10, sticky="w")
         self.entry_client_id = ctk.CTkEntry(self.tab_settings)
-        self.entry_client_id.insert(0, self.config_manager.get("spotify_client_id"))
+        cid = self.config_manager.get("spotify_client_id")
+        self.entry_client_id.insert(0, cid)
         self.entry_client_id.grid(row=2, column=1, padx=10, pady=10, sticky="ew")
+        print(f"UI Startup: Client ID widget populated with: {'(data)' if cid else '(EMPTY)'}")
 
         ctk.CTkLabel(self.tab_settings, text=self.i18n.t("client_secret") + ":").grid(row=3, column=0, padx=10, pady=10, sticky="w")
         self.entry_secret = ctk.CTkEntry(self.tab_settings, show="*")
@@ -2942,24 +3056,34 @@ class SpotDLApp(ctk.CTk):
 
 
     def save_settings(self):
-        """Persists settings to disk."""
-        self.config_manager.set("cookie_file", self.entry_cookie.get())
-        self.config_manager.set("output_path", self.entry_output.get())
-        self.config_manager.set("spotify_client_id", self.entry_client_id.get())
-        self.config_manager.set("spotify_client_secret", self.entry_secret.get())
-        self.config_manager.set("spotify_user_id", self.entry_user_id.get())
-        self.config_manager.set("log_level", self.combo_log.get())
-        
-        new_lang = "tr" if self.combo_lang.get() == "Türkçe" else "en"
-        old_lang = self.config_manager.get("language")
-        self.config_manager.set("language", new_lang)
+        """Persists settings to disk with strict validation."""
+        import traceback
+        stack = "".join(traceback.format_stack()[-5:])
+        print(f"DEBUG: save_settings called. Stack:\n{stack}")
 
+        cid = self.entry_client_id.get().strip()
+        secret = self.entry_secret.get().strip()
+        
+        self.log_message(f"Save Settings Manual Trigger. CID Length: {len(cid)}, Secret Length: {len(secret)}")
+        print(f"DEBUG: UI Widgets - CID: {cid[:5]}..., Secret: {secret[:5]}...")
+        self.config_manager.update_config({
+            "cookie_file": self.entry_cookie.get(),
+            "output_path": self.entry_output.get(),
+            "spotify_client_id": cid,
+            "spotify_client_secret": secret,
+            "spotify_user_id": self.entry_user_id.get(),
+            "log_level": self.combo_log.get(),
+            "language": "tr" if self.combo_lang.get() == "Türkçe" else "en"
+        }, bypass_safety=True)
+        
+        new_lang = self.config_manager.get("language")
+        old_lang = self.i18n.lang
+        
         msg = self.i18n.t("settings_saved")
         if new_lang != old_lang:
             msg += "\n\n" + self.i18n.t("restart_notice")
         messagebox.showinfo(self.i18n.t("settings"), msg)
         
-        # self.setup_logging() # Re-configure logging (Not implemented)
         self.update_profile_display() # Refresh profile
 
     def confirm_restore_defaults(self):

@@ -9,6 +9,5 @@ from app.ui.app import SpotDLApp
 from app.core.constants import APP_NAME, APP_VERSION
 
 if __name__ == "__main__":
-    print(f"Starting {APP_NAME} v{APP_VERSION}...")
     app = SpotDLApp()
     app.mainloop()

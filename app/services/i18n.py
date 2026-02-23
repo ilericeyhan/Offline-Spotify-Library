@@ -189,7 +189,12 @@ class I18nService:
                 "select_playlists_to_dl": "Select playlists to download",
                 "synced_tag": "[Synced]",
                 "checking_profile_sync": "Checking Profile Sync Status",
-                "checking_progress": "Checking sync: {current}/{total}..."
+                "checking_progress": "Checking sync: {current}/{total}...",
+                "open_browser_authorize": "Open Browser & Authorize",
+                "use_saved_creds_qn": "Found saved Spotify API credentials in your settings.\n\nWould you like to use these existing credentials to login?",
+                "use_saved_creds_options": "\nYes = Use Saved\nNo = Enter Manually\nCancel = Abort Login",
+                "login_browser_opened": "A browser window has opened for Spotify login. Please authorize the application.\nOnce authorized, the setup will complete automatically.",
+                "auth_success": "Successfully authenticated!"
             },
             "tr": {
                 "library": "Kütüphane",
@@ -356,7 +361,12 @@ class I18nService:
                 "select_playlists_to_dl": "İndirmek için çalma listeleri seçin",
                 "synced_tag": "[Senkron]",
                 "checking_profile_sync": "Profil Eşitleme Durumu Kontrol Ediliyor",
-                "checking_progress": "Eşitleme kontrolü: {current}/{total}..."
+                "checking_progress": "Eşitleme kontrolü: {current}/{total}...",
+                "open_browser_authorize": "Tarayıcıyı Aç ve Yetkilendir",
+                "use_saved_creds_qn": "Ayarlarınızda kayıtlı Spotify API kimlik bilgileri bulundu.\n\nBu bilgileri giriş yapmak için kullanmak ister misiniz?",
+                "use_saved_creds_options": "\nEvet = Kayıtlıyı Kullan\nHayır = Manuel Gir\nİptal = Vazgeç",
+                "login_browser_opened": "Spotify girişi için tarayıcı açıldı. Lütfen uygulamaya izin verin.\nOnayladıktan sonra kurulum otomatik olarak tamamlanacaktır.",
+                "auth_success": "Başarıyla kimlik doğrulandı!"
             }
         }
 

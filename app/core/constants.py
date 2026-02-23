@@ -4,7 +4,7 @@ import customtkinter as ctk
 
 # --- Constants & Configuration ---
 APP_NAME = "Offline Spotify Library"
-APP_VERSION = "1.3.11"
+APP_VERSION = "1.3.14"
 
 # Standard cross-platform user data directory
 USER_DATA_DIR = os.path.join(os.path.expanduser("~"), "Library", "Application Support", APP_NAME) if sys.platform == "darwin" else \
@@ -16,6 +16,7 @@ if not os.path.exists(USER_DATA_DIR):
 CONFIG_FILE = os.path.join(USER_DATA_DIR, "config.json")
 HISTORY_FILE = os.path.join(USER_DATA_DIR, "history.json")
 LOG_FILE = os.path.join(USER_DATA_DIR, "app.log")
+SPOTIFY_CACHE_FILE = os.path.join(USER_DATA_DIR, ".spotify_cache")
 
 REDIRECT_URI = "http://127.0.0.1:8888/callback"
 SCOPES = "user-library-read playlist-read-private playlist-read-collaborative"
