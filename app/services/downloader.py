@@ -27,11 +27,14 @@ class DownloaderService:
         cookie_file = self.config.get("cookie_file")
         
         if not spotdl_path:
-            # Fallback to system path
-            spotdl_path = "spotdl"
-
-        # Construct Command
-        cmd = [spotdl_path, url, "--output", "{artists} - {title}.{output-ext}", "--overwrite", "skip"]
+            import sys
+            if getattr(sys, 'frozen', False):
+                cmd = [sys.executable, "--internal-spotdl-run", url, "--output", "{artists} - {title}.{output-ext}", "--overwrite", "skip"]
+            else:
+                cmd = [sys.executable, "-m", "spotdl", url, "--output", "{artists} - {title}.{output-ext}", "--overwrite", "skip"]
+        else:
+            # Construct Command
+            cmd = [spotdl_path, url, "--output", "{artists} - {title}.{output-ext}", "--overwrite", "skip"]
         
         # Add cookie file if provided
         if cookie_file and os.path.exists(cookie_file):

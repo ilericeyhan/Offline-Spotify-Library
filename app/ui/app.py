@@ -1275,12 +1275,15 @@ class SpotDLApp(ctk.CTk):
 
         if not library:
             notice_frame = ctk.CTkFrame(self.library_frame, fg_color="transparent")
-            notice_frame.pack(expand=True, fill="both", pady=40)
+            notice_frame.pack(pady=40)
             ctk.CTkLabel(notice_frame, text=self.i18n.t("empty_library"), font=("Arial", 18, "bold")).pack(pady=(0, 10))
             msg = (self.i18n.t("library_info") + "\n\n" + self.i18n.t("quick_start"))
             ctk.CTkLabel(notice_frame, text=msg, font=("Arial", 12)).pack(pady=10)
+            
+            self.lbl_lib_refresh_status.configure(text="")
+            self.set_active_task(None)
             return
-
+        
         # Start recursive rendering
         self._render_library_items(self.library_frame, library, remote_sync=remote_sync)
 
@@ -3089,6 +3092,7 @@ class SpotDLApp(ctk.CTk):
     def confirm_restore_defaults(self):
         if messagebox.askyesno(self.i18n.t("restore_defaults"), self.i18n.t("restore_confirm")):
             self.config_manager.reset_defaults()
+            self.history_manager.clear_history()
             
             # Remove spotipy cache files (tokens)
             try:
@@ -3115,6 +3119,7 @@ class SpotDLApp(ctk.CTk):
             # self.setup_logging()
             self.update_profile_display()
             self.refresh_library_ui()
+            self.refresh_history_ui()
             
             messagebox.showinfo(self.i18n.t("info"), self.i18n.t("reset_done"))
 
@@ -3157,13 +3162,20 @@ class SpotDLApp(ctk.CTk):
         if cookie_file:
             cookie_file = os.path.abspath(cookie_file)
 
-        cmd = [
-            "spotdl",
+        import sys
+        if getattr(sys, 'frozen', False):
+            # When bundled with PyInstaller, route back to main.py's internal hook
+            cmd = [sys.executable, "--internal-spotdl-run"]
+        else:
+            # When running from source, use the spotdl entry point (sys.executable -m spotdl is safer than just 'spotdl')
+            cmd = [sys.executable, "-m", "spotdl"]
+            
+        cmd.extend([
             "--cookie-file", cookie_file,
             "--bitrate", "disable",
             "--format", fmt,
             "--output", "{artists} - {title}.{output-ext}"
-        ]
+        ])
 
         if cid and secret:
             cmd.extend(["--client-id", cid, "--client-secret", secret])
